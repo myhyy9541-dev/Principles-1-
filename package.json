@@ -34,14 +34,17 @@
       "target": [
         "nsis",
         "portable"
-      ],
-      "artifactName": "Fursan-LAN-${version}-${arch}.${ext}"
+      ]
     },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
-      "createStartMenuShortcut": true
+      "createStartMenuShortcut": true,
+      "artifactName": "Fursan-Lan-Setup-${version}-${arch}.${ext}"
+    },
+    "portable": {
+      "artifactName": "Fursan-Lan-Portable-${version}-${arch}.${ext}"
     }
   }
 }

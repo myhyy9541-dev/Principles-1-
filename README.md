@@ -58,9 +58,10 @@ npm test
 npm ci
 npm test
 npm run build:win
+npm run build:portable
 ```
 
-ينشئ Electron Builder مثبت NSIS ونسخة portable بصيغة EXE في `release/`. كما يمكن تشغيل سير عمل **Build Windows installer** في GitHub Actions وتنزيل artifact باسم `fursan-lan-windows-installers`.
+ينشئ `npm run build:win` مثبت NSIS باسم `Fursan-Lan-Setup-0.4.1-x64.exe`، وينشئ `npm run build:portable` نسخة محمولة باسم `Fursan-Lan-Portable-0.4.1-x64.exe` في `release/`. كما يمكن تشغيل سير عمل **Build Windows installer** في GitHub Actions وتنزيل artifact باسم `fursan-lan-windows-installers`.
 
 ## ما تم التحقق منه وما يحتاج اختبارًا عمليًا
 
