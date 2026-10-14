@@ -1,6 +1,6 @@
 {
   "name": "wasel-lan",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "تطبيق تواصل محلي للمنشآت دون إنترنت",
   "main": "src/main.js",
   "author": "Wasel LAN",

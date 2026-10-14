@@ -44,7 +44,25 @@ function startDiscovery() {
   const timer = setInterval(broadcastRoom, 1800);
   timer.unref();
 }
-function broadcastMembers() { if (io) io.emit('members', [...peers.values()]); }
+function broadcastMembers() {
+  if (io) io.emit('members', [...new Map([...peers.values()].map(user => [user.clientId, user])).values()]);
+}
+function socketForClient(clientId) { return [...peers.entries()].find(([, user]) => user.clientId === clientId)?.[0] || null; }
+function broadcastContacts() {
+  if (!io || !roomStore) return;
+  const contacts = roomStore.contacts.map(contact => ({ ...contact, online: Boolean(socketForClient(contact.clientId)) }));
+  for (const id of peers.keys()) io.to(id).emit('contacts', contacts);
+}
+function publishMessage(message) {
+  if (message.channel === 'general') io.emit('chat-message', message);
+  else if (message.groupId) {
+    const group = roomStore.groupById(message.groupId);
+    for (const clientId of group?.members || []) { const id = socketForClient(clientId); if (id) io.to(id).emit('chat-message', message); }
+  } else {
+    for (const clientId of roomStore.messageRecipients(message)) { const id = socketForClient(clientId); if (id) io.to(id).emit('chat-message', message); }
+    const senderSocket = socketForClient(message.senderClientId); if (senderSocket) io.to(senderSocket).emit('chat-message', message);
+  }
+}
 function withinRate(socket, key, limit) {
   const now = Date.now();
   socket.data.rateWindows ||= new Map();
@@ -72,10 +90,23 @@ function createRoomServer() {
     socket.on('join', (profile = {}) => {
       if (socket.data.user) return;
       const name = String(profile.name || 'مستخدم').replace(/[\r\n\0]/g, ' ').trim().slice(0, 40) || 'مستخدم';
-      const user = { id: socket.id, name, joinedAt: Date.now() };
+      const clientId = String(profile.clientId || '').slice(0, 80);
+      if (!/^[a-zA-Z0-9_-]{16,80}$/.test(clientId)) return socket.emit('notice', 'تعذرت قراءة هوية هذا الجهاز؛ أعد تشغيل التطبيق.');
+      const user = { id: socket.id, clientId, name, joinedAt: Date.now() };
       peers.set(socket.id, user);
       socket.data.user = user;
-      socket.emit('history', roomStore.publicHistory());
+      roomStore.rememberContact(user);
+      broadcastContacts();
+      socket.emit('identity', { clientId });
+      socket.emit('history', roomStore.historyFor(clientId));
+      socket.emit('groups', roomStore.visibleGroups(clientId));
+      socket.emit('contacts', roomStore.contacts.map(contact => ({ ...contact, online: Boolean(socketForClient(contact.clientId)) })));
+      for (const message of roomStore.offlineFor(clientId)) {
+        roomStore.markDelivered(message.id, clientId);
+        socket.emit('chat-message', message);
+        const from = socketForClient(message.senderClientId);
+        if (from) io.to(from).emit('message-receipt', { id: message.id, kind: 'delivered', clientId });
+      }
       broadcastMembers();
       io.emit('system-message', { text: `${user.name} انضم إلى الغرفة`, time: Date.now() });
       if (activeCall) io.to(socket.id).emit('signal', { from: activeCall.owner, description: { type: 'call-start', mode: activeCall.mode } });
@@ -85,17 +116,89 @@ function createRoomServer() {
       if (!withinRate(socket, 'chat', 40)) return socket.emit('notice', 'أرسلت رسائل بسرعة كبيرة؛ انتظر قليلاً ثم حاول مجدداً.');
       const text = String(raw?.text || '').trim().slice(0, MAX_MESSAGE_CHARS);
       if (!text) return;
-      const message = { id: `${Date.now()}-${socket.id}`, type: 'text', text, user: socket.data.user.name, senderId: socket.id, time: Date.now() };
-      try { roomStore.addMessage(message); io.emit('chat-message', message); }
+      const channel = raw?.channel === 'general' ? 'general' : 'direct';
+      const toId = channel === 'direct' ? String(raw?.toId || '').slice(0, 80) : undefined;
+      const groupId = channel === 'direct' && raw?.groupId ? String(raw.groupId).slice(0, 80) : undefined;
+      const group = groupId ? roomStore.groupById(groupId) : null;
+      if (groupId && !group?.members.includes(socket.data.user.clientId)) return socket.emit('notice', 'لا تملك صلاحية إرسال رسالة إلى هذه المجموعة.');
+      if (!groupId && channel === 'direct' && (!toId || toId === socket.data.user.clientId)) return socket.emit('notice', 'اختر مستخدماً آخر للمحادثة الخاصة.');
+      if (!groupId && channel === 'direct' && !roomStore.contacts.some(contact => contact.clientId === toId)) return socket.emit('notice', 'المستخدم المحدد غير معروف للمضيف.');
+      const message = { id: require('node:crypto').randomUUID(), type: 'text', text, user: socket.data.user.name, senderId: socket.id, senderClientId: socket.data.user.clientId, channel, toId: groupId ? undefined : toId, groupId, recipientIds: channel === 'general' ? [...new Set([...roomStore.contacts.map(c => c.clientId), socket.data.user.clientId])] : undefined, time: Date.now(), deliveredTo: [], readBy: [] };
+      try {
+        roomStore.addMessage(message); publishMessage(message);
+        for (const clientId of roomStore.messageRecipients(message)) {
+          if (socketForClient(clientId)) { roomStore.markDelivered(message.id, clientId); const recipientSocket = socketForClient(clientId); io.to(recipientSocket).emit('message-receipt', { id: message.id, kind: 'delivered', clientId }); }
+        }
+      }
       catch (error) { socket.emit('notice', `تعذر حفظ الرسالة: ${error.message}`); }
     });
+    socket.on('broadcast', raw => {
+      if (!socket.data.user || !withinRate(socket, 'chat', 40)) return;
+      const text = String(raw?.text || '').trim().slice(0, MAX_MESSAGE_CHARS);
+      if (!text) return;
+      const recipientIds = roomStore.contacts.map(contact => contact.clientId).filter(id => id !== socket.data.user.clientId);
+      const message = { id: require('node:crypto').randomUUID(), type: 'text', text, user: socket.data.user.name, senderId: socket.id, senderClientId: socket.data.user.clientId, channel: 'broadcast', recipientIds, time: Date.now(), deliveredTo: [], readBy: [] };
+      try { roomStore.addMessage(message); publishMessage(message); socket.emit('chat-message', message); }
+      catch (error) { socket.emit('notice', `تعذر حفظ رسالة البث: ${error.message}`); }
+    });
+    socket.on('create-group', raw => {
+      if (!socket.data.user || !withinRate(socket, 'group', 10)) return;
+      try {
+        const members = (Array.isArray(raw?.members) ? raw.members : []).filter(id => roomStore.contacts.some(contact => contact.clientId === id));
+        const group = roomStore.createGroup({ name: raw?.name, members, ownerId: socket.data.user.clientId });
+        for (const clientId of group.members) { const id = socketForClient(clientId); if (id) io.to(id).emit('groups', roomStore.visibleGroups(clientId)); }
+        socket.emit('notice', `تم إنشاء مجموعة «${group.name}».`);
+      } catch (error) { socket.emit('notice', error.message); }
+    });
+    socket.on('mark-read', raw => {
+      if (!socket.data.user) return;
+      const message = roomStore.markRead(String(raw?.id || ''), socket.data.user.clientId);
+      if (!message) return;
+      const from = socketForClient(message.senderClientId);
+      if (from) io.to(from).emit('message-receipt', { id: message.id, kind: 'read', clientId: socket.data.user.clientId });
+    });
+    socket.on('upload-init', (raw, acknowledge = () => {}) => {
+      if (!socket.data.user) return acknowledge({ ok: false, error: 'لم تنضم إلى الغرفة.' });
+      try {
+        const group = raw?.groupId ? roomStore.groupById(String(raw.groupId)) : null;
+        if (raw?.groupId && !group?.members.includes(socket.data.user.clientId)) throw new Error('لا تملك صلاحية المشاركة في هذه المجموعة.');
+        const channel = raw?.channel === 'general' ? 'general' : 'direct';
+        const toId = channel === 'direct' && !raw?.groupId ? String(raw?.toId || '') : undefined;
+        if (channel === 'direct' && !raw?.groupId && !roomStore.contacts.some(contact => contact.clientId === toId)) throw new Error('المستلم غير معروف للمضيف.');
+        const offset = roomStore.initUpload({ ...raw, channel, toId, user: socket.data.user.name, senderId: socket.id, senderClientId: socket.data.user.clientId });
+        acknowledge({ ok: true, offset });
+      } catch (error) { acknowledge({ ok: false, error: error.message }); }
+    });
+    socket.on('upload-chunk', (raw, acknowledge = () => {}) => {
+      if (!socket.data.user || !withinRate(socket, 'upload-chunk', 1000)) return acknowledge({ ok: false, error: 'الرفع سريع جداً أو لم تنضم إلى الغرفة.' });
+        try { acknowledge({ ok: true, offset: roomStore.appendUploadChunk(raw.transferId, raw.offset, raw.data, socket.data.user.clientId) }); }
+      catch (error) { acknowledge({ ok: false, error: error.message }); }
+    });
+    socket.on('upload-complete', (raw, acknowledge = () => {}) => {
+      if (!socket.data.user) return acknowledge({ ok: false, error: 'لم تنضم إلى الغرفة.' });
+      try {
+        const record = roomStore.finishUpload(String(raw?.transferId || ''), socket.data.user.clientId);
+        const { diskName, ...message } = record;
+        const group = message.groupId ? roomStore.groupById(message.groupId) : null;
+        const targets = message.channel === 'general' ? [...peers.keys()] : message.groupId ? (group?.members || []).map(socketForClient).filter(Boolean) : [socketForClient(message.toId), socket.id].filter(Boolean);
+        for (const id of targets) io.to(id).emit('file-message', message);
+        acknowledge({ ok: true, fileId: message.id });
+      } catch (error) { acknowledge({ ok: false, error: error.message }); }
+    });
+    socket.on('upload-cancel', raw => { if (socket.data.user) roomStore.cancelUpload(String(raw?.transferId || ''), socket.data.user.clientId); });
     socket.on('file', payload => {
       if (!socket.data.user) return;
       if (!withinRate(socket, 'file', 8)) return socket.emit('notice', 'بلغت حد مشاركة الملفات مؤقتاً؛ حاول لاحقاً.');
       try {
-        const record = roomStore.addFile({ ...payload, user: socket.data.user.name, senderId: socket.id, time: Date.now() });
+        const group = payload?.groupId ? roomStore.groupById(String(payload.groupId)) : null;
+        if (payload?.groupId && !group?.members.includes(socket.data.user.clientId)) throw new Error('لا تملك صلاحية مشاركة ملف في هذه المجموعة.');
+        const channel = payload?.channel === 'general' ? 'general' : 'direct';
+        const toId = channel === 'direct' && !payload?.groupId ? String(payload?.toId || '') : undefined;
+        if (channel === 'direct' && !payload?.groupId && !roomStore.contacts.some(contact => contact.clientId === toId)) throw new Error('اختر مستلماً معروفاً للمضيف.');
+        const record = roomStore.addFile({ ...payload, channel, toId, groupId: payload?.groupId, user: socket.data.user.name, senderId: socket.id, senderClientId: socket.data.user.clientId, time: Date.now() });
         const { diskName, ...message } = record;
-        io.emit('file-message', message);
+        const targets = message.channel === 'general' ? [...peers.keys()] : message.groupId ? (group?.members || []).map(socketForClient).filter(Boolean) : [socketForClient(message.toId), socket.id].filter(Boolean);
+        for (const id of targets) io.to(id).emit('file-message', message);
       } catch (error) { socket.emit('notice', error.message || 'تعذر حفظ الملف.'); }
     });
     socket.on('signal', packet => {
@@ -115,7 +218,7 @@ function createRoomServer() {
       const user = peers.get(socket.id); peers.delete(socket.id);
       if (user) {
         if (activeCall?.owner === socket.id) { activeCall = null; socket.broadcast.emit('signal', { from: socket.id, description: { type: 'call-end' } }); }
-        broadcastMembers(); io.emit('system-message', { text: `${user.name} غادر الغرفة`, time: Date.now() });
+        broadcastMembers(); broadcastContacts(); io.emit('system-message', { text: `${user.name} غادر الغرفة`, time: Date.now() });
       }
     });
   });
