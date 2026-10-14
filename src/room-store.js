@@ -47,11 +47,17 @@ class RoomStore {
     else this.contacts.push(clean);
     this.atomicWrite(this.contactsPath, this.contacts);
   }
-  createGroup({ name, members, ownerId }) {
+  createGroup({ id, name, members, ownerId }) {
     const cleanName = String(name || '').trim().slice(0, 60);
     const cleanMembers = [...new Set([ownerId, ...members].filter(id => typeof id === 'string' && id.length <= 80))];
     if (!cleanName || cleanMembers.length < 2) throw new Error('أضف اسماً للمجموعة وعضواً آخر على الأقل.');
-    const group = { id: crypto.randomUUID(), name: cleanName, members: cleanMembers, ownerId, createdAt: Date.now() };
+    const groupId = /^[0-9a-f-]{36}$/i.test(String(id || '')) ? id : crypto.randomUUID();
+    const existing = this.groups.find(item => item.id === groupId);
+    if (existing) {
+      if (existing.name !== cleanName || existing.ownerId !== ownerId || JSON.stringify([...existing.members].sort()) !== JSON.stringify([...cleanMembers].sort())) throw new Error('معرف المجموعة مستخدم بتفاصيل مختلفة.');
+      return existing;
+    }
+    const group = { id: groupId, name: cleanName, members: cleanMembers, ownerId, createdAt: Date.now() };
     this.groups.push(group);
     this.atomicWrite(this.groupsPath, this.groups);
     return group;
@@ -95,7 +101,7 @@ class RoomStore {
     if (!match) throw new Error('صيغة الملف غير مدعومة.');
     const bytes = Buffer.from(match[2], 'base64');
     if (!bytes.length || bytes.length > MAX_FILE_BYTES) throw new Error('الحد الأقصى للملف 10 ميغابايت.');
-    if (this.storedBytes + bytes.length > MAX_STORAGE_BYTES) throw new Error('امتلأت مساحة مشاركة الملفات (1 غيغابايت) على جهاز المضيف.');
+    if (this.storedBytes + bytes.length > MAX_STORAGE_BYTES) throw new Error('امتلأت مساحة مشاركة الملفات (1 غيغابايت) على هذا الجهاز.');
     const safeName = path.basename(String(name || 'ملف').replace(/[\\\r\n\0]/g, '_')).slice(0, 180) || 'ملف';
     const contentType = SAFE_MIME.test(String(mime || match[1] || '')) ? String(mime || match[1]) : 'application/octet-stream';
     const id = crypto.randomUUID();
@@ -140,7 +146,7 @@ class RoomStore {
     const meta = this.uploads.get(transferId);
     if (!meta || meta.offset !== meta.size) throw new Error('لم يكتمل رفع الملف بعد.');
     if (meta.senderClientId !== senderClientId) throw new Error('لا تملك صلاحية إكمال هذا النقل.');
-    if (this.storedBytes + meta.size > MAX_STORAGE_BYTES) throw new Error('امتلأت مساحة مشاركة الملفات (1 غيغابايت) على جهاز المضيف.');
+    if (this.storedBytes + meta.size > MAX_STORAGE_BYTES) throw new Error('امتلأت مساحة مشاركة الملفات (1 غيغابايت) على هذا الجهاز.');
     const filePath = path.join(this.filesDir, transferId + '.part');
     const id = crypto.randomUUID();
     fs.renameSync(filePath, path.join(this.filesDir, id));

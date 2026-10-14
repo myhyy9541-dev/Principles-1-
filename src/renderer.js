@@ -7,14 +7,16 @@ if (!myName) {
 }
 let clientId = localStorage.getItem('wasel-client-id');
 if (!clientId) { clientId = `w${crypto.randomUUID().replaceAll('-', '')}`; localStorage.setItem('wasel-client-id', clientId); }
-let connected = false, connecting = false, hostMode = false, currentHost = null;
+let connected = false, connecting = false, localPeerEndpoint = null;
 let pendingFile = null, localStream = null, callMode = null, currentMembers = [], socket = null;
+const peerSockets = new Map(), connectionSockets = new Map();
 let contacts = [], groups = [], currentChat = 'general', allMessages = [], searchTerm = '';
 const readSent = new Set();
 let acceptingCall = false, startingCall = false;
 const peers = new Map();
 const deferredDescriptions = new Map();
 const deferredCandidates = new Map();
+const syncedGroups = new Set();
 
 function toast(message) {
   const element = $('toast');
@@ -24,9 +26,18 @@ function toast(message) {
 }
 function formatTime(value) { return new Date(value || Date.now()).toLocaleTimeString('ar', { hour: '2-digit', minute: '2-digit' }); }
 function fileUrl(id) {
-  if (!currentHost || !/^[0-9a-f-]{36}$/i.test(String(id))) return '#';
-  return `http://${currentHost.address}:${currentHost.port}/api/files/${encodeURIComponent(id)}`;
+  if (!localPeerEndpoint || !/^[0-9a-f-]{36}$/i.test(String(id))) return '#';
+  return `http://${localPeerEndpoint.address}:${localPeerEndpoint.port}/api/files/${encodeURIComponent(id)}`;
 }
+function endpointSockets(target = {}) {
+  const chosen = [socket?.connected ? socket : null];
+  if (target.groupId) for (const id of groups.find(group => group.id === target.groupId)?.members || []) chosen.push(peerSockets.get(id));
+  else if (target.channel === 'direct' && target.toId) chosen.push(peerSockets.get(target.toId));
+  else for (const peer of peerSockets.values()) chosen.push(peer);
+  return [...new Set(chosen.filter(item => item?.connected))];
+}
+function emitToTarget(event, payload, target = {}) { for (const peer of endpointSockets(target)) peer.emit(event, payload); }
+function signalToPeer(client, payload) { const peer = peerSockets.get(client); if (peer?.connected) peer.emit('signal', payload); }
 function addMessage(message) {
   const box = $('messages');
   box.querySelector('.welcome')?.remove();
@@ -69,26 +80,24 @@ function renderMessages() {
   for (const message of list) addMessage(message);
   if (!list.length) box.innerHTML = '<div class="welcome"><div class="welcome-icon">✦</div><h2>لا توجد رسائل هنا بعد</h2><p>ابدأ المحادثة مع فريقك على الشبكة المحلية.</p></div>';
   $('searchCount').textContent = searchTerm ? `${list.length} نتيجة` : '';
-  if (connected) for (const message of list) if (message.senderClientId !== clientId && message.channel !== 'general' && !(message.readBy || []).includes(clientId) && !readSent.has(message.id)) { readSent.add(message.id); socket.emit('mark-read', { id: message.id }); }
+  if (connected) for (const message of list) if (message.senderClientId !== clientId && message.channel !== 'general' && !(message.readBy || []).includes(clientId) && !readSent.has(message.id)) { readSent.add(message.id); emitToTarget('mark-read', { id: message.id }, { channel: 'direct', toId: message.senderClientId }); }
 }
 function formatSize(bytes = 0) {
   return bytes < 1024 * 1024 ? `${Math.max(1, Math.round(bytes / 1024))} ك.ب` : `${(bytes / 1024 / 1024).toFixed(1)} م.ب`;
 }
 function renderMembers(members) {
   const previousIds = new Set(currentMembers.map(member => member.id));
-  const nextIds = new Set(members.map(member => member.id));
-  for (const [id, pc] of peers) if (!nextIds.has(id)) { pc.close(); peers.delete(id); }
-  currentMembers = members;
-  $('memberCount').textContent = members.length;
-  $('members').innerHTML = members.map(user => `<button class="member member-button" data-chat="user:${escapeHtml(user.clientId)}"><span class="avatar">${escapeHtml(user.name.slice(0, 1))}</span>${escapeHtml(user.name)}<span class="green-dot"></span></button>`).join('');
-  if (localStream && callMode) members.filter(user => user.id !== window._socketId && !previousIds.has(user.id)).forEach(user => makePeer(user.id, true));
+  currentMembers = members.filter(member => member.clientId !== clientId).map(member => ({ ...member, id: member.clientId }));
+  $('memberCount').textContent = currentMembers.length;
+  $('members').innerHTML = currentMembers.map(user => `<button class="member member-button" data-chat="user:${escapeHtml(user.clientId)}"><span class="avatar">${escapeHtml(user.name.slice(0, 1))}</span>${escapeHtml(user.name)}<span class="green-dot"></span></button>`).join('');
+  if (localStream && callMode) currentMembers.filter(user => !previousIds.has(user.id)).forEach(user => makePeer(user.id, true));
 }
 function renderChatOptions() {
   const select = $('chatSelect');
   const selected = currentChat;
   select.innerHTML = '<option value="general">المحادثة العامة</option>' + contacts.filter(contact => contact.clientId !== clientId).map(contact => `<option value="user:${escapeHtml(contact.clientId)}">خاص: ${escapeHtml(contact.name)}${contact.online ? '' : ' (غير متصل)'}</option>`).join('') + groups.map(group => `<option value="group:${escapeHtml(group.id)}">مجموعة: ${escapeHtml(group.name)}</option>`).join('');
   if ([...select.options].some(option => option.value === selected)) select.value = selected;
-  $('chatList').innerHTML = `<button class="room-item ${currentChat === 'general' ? 'active' : ''}" data-chat="general"><span class="hash">#</span><span>عام</span><span class="online-pill">محلي</span></button>` + contacts.filter(contact => contact.clientId !== clientId).map(contact => `<button class="room-item ${currentChat === `user:${contact.clientId}` ? 'active' : ''}" data-chat="user:${escapeHtml(contact.clientId)}"><span class="avatar">${escapeHtml(contact.name.slice(0,1))}</span><span>${escapeHtml(contact.name)}</span>${contact.online ? '<span class="green-dot"></span>' : '<span class="offline-mark">○</span>'}</button>`).join('') + groups.map(group => `<button class="room-item ${currentChat === `group:${group.id}` ? 'active' : ''}" data-chat="group:${escapeHtml(group.id)}"><span class="hash">#</span><span>${escapeHtml(group.name)}</span></button>`).join('');
+  $('chatList').innerHTML = `<button class="room-item ${currentChat === 'general' ? 'active' : ''}" data-chat="general"><span class="hash">#</span><span>عام</span><span class="online-pill">عام</span></button>` + contacts.filter(contact => contact.clientId !== clientId).map(contact => `<button class="room-item ${currentChat === `user:${contact.clientId}` ? 'active' : ''}" data-chat="user:${escapeHtml(contact.clientId)}"><span class="avatar">${escapeHtml(contact.name.slice(0,1))}</span><span>${escapeHtml(contact.name)}</span>${contact.online ? '<span class="green-dot"></span>' : '<span class="offline-mark">○</span>'}</button>`).join('') + groups.map(group => `<button class="room-item ${currentChat === `group:${group.id}` ? 'active' : ''}" data-chat="group:${escapeHtml(group.id)}"><span class="hash">#</span><span>${escapeHtml(group.name)}</span></button>`).join('');
   document.querySelectorAll('[data-chat]').forEach(button => button.onclick = () => selectChat(button.dataset.chat));
 }
 function selectChat(chat) {
@@ -98,30 +107,61 @@ function selectChat(chat) {
   else $('chatTitle').textContent = `مجموعة · ${groups.find(item => item.id === chat.slice(6))?.name || 'مجموعة'}`;
   renderChatOptions(); renderMessages();
 }
-function handleEvent(event, data) {
+function handleEvent(event, data, source, local = false) {
   switch (event) {
     case 'connect':
-      connected = true; connecting = false; window._socketId = data?.id;
-      $('connectionText').textContent = 'متصل بالشبكة المحلية'; $('roomTitle').textContent = 'غرفة المنشأة';
+      if (local) { connected = true; connecting = false; window._socketId = data?.id; $('connectionText').textContent = 'متصل بالشبكة المحلية — P2P'; $('networkTitle').textContent = 'شبكة الأقران'; }
       break;
     case 'disconnect':
-      connected = false; connecting = true; $('connectionText').textContent = 'انقطع الاتصال؛ جارٍ إعادة المحاولة…';
+      connectionSockets.delete(source?._fursanAddress || '');
+      for (const [id, peer] of peerSockets) if (peer === source) { peerSockets.delete(id); peers.get(id)?.close(); peers.delete(id); }
+      contacts = contacts.map(contact => ({ ...contact, online: peerSockets.has(contact.clientId) }));
+      renderChatOptions(); renderMembers([...peerSockets].map(([id]) => ({ clientId: id, name: contacts.find(c => c.clientId === id)?.name || 'نظير' })));
+      if (local) { connected = false; connecting = true; $('connectionText').textContent = 'انقطع الاتصال المحلي؛ جارٍ إعادة المحاولة…'; }
       break;
-    case 'connect_error':
-      connected = false; $('connectionText').textContent = 'تعذر الاتصال؛ جارٍ إعادة المحاولة…';
+    case 'connect_error': if (local) $('connectionText').textContent = 'تعذر تشغيل نقطة P2P المحلية…'; break;
+    case 'identity': if (local) { clientId = data.clientId; localStorage.setItem('wasel-client-id', clientId); } break;
+    case 'peer-profile':
+      if (!local && data?.clientId && data.clientId !== clientId) {
+        peerSockets.set(data.clientId, source);
+        const item = { clientId: data.clientId, name: String(data.name || 'نظير'), online: true };
+        contacts = [item, ...contacts.filter(contact => contact.clientId !== item.clientId)];
+        renderChatOptions(); renderMembers([...peerSockets].map(([id]) => ({ clientId: id, name: contacts.find(c => c.clientId === id)?.name || 'نظير' })));
+        for (const group of groups) source.emit('create-group', group);
+        if (localStream && callMode && !peers.has(data.clientId)) makePeer(data.clientId, true);
+      }
       break;
-    case 'identity': clientId = data.clientId; localStorage.setItem('wasel-client-id', clientId); break;
-    case 'contacts': contacts = data; renderChatOptions(); break;
-    case 'groups': groups = data; renderChatOptions(); break;
-    case 'history': allMessages = data; renderMessages(); break;
-    case 'members': renderMembers(data); break;
-    case 'system-message': addMessage({ type: 'system', text: data.text }); break;
+    case 'contacts': {
+      const merged = new Map(contacts.map(c => [c.clientId, c]));
+      for (const item of data || []) if (item.clientId !== clientId) merged.set(item.clientId, { ...merged.get(item.clientId), ...item, online: peerSockets.has(item.clientId) });
+      contacts = [...merged.values()]; renderChatOptions(); break;
+    }
+    case 'groups': {
+      const merged = new Map(groups.map(group => [group.id, group]));
+      const newlyLearned = [];
+      for (const group of data || []) { if (!merged.has(group.id)) newlyLearned.push(group); merged.set(group.id, { ...merged.get(group.id), ...group }); }
+      groups = [...merged.values()]; renderChatOptions();
+      for (const group of newlyLearned) if (!local && !syncedGroups.has(group.id)) {
+        syncedGroups.add(group.id);
+        socket?.emit('create-group', group);
+        for (const peer of peerSockets.values()) if (peer !== source) peer.emit('create-group', group);
+      }
+      break;
+    }
+    case 'history': {
+      const merged = new Map(allMessages.map(message => [message.id, message]));
+      for (const message of data || []) merged.set(message.id, { ...merged.get(message.id), ...message });
+      allMessages = [...merged.values()].sort((a, b) => (a.time || 0) - (b.time || 0)); renderMessages(); break;
+    }
+    case 'members': if (local) renderMembers([...peerSockets].map(([id]) => ({ clientId: id, name: contacts.find(c => c.clientId === id)?.name || 'نظير' }))); break;
+    case 'system-message': if (local) addMessage({ type: 'system', text: data.text }); break;
     case 'chat-message': {
+      if (!local && data?.toId === clientId && source?.connected) socket?.emit('cache-message', data);
       const index = allMessages.findIndex(message => message.id === data.id);
       if (index >= 0) allMessages[index] = { ...allMessages[index], ...data }; else allMessages.push(data);
       renderMessages(); break;
     }
-    case 'file-message': allMessages.push({ type: 'file', ...data }); renderMessages(); break;
+    case 'file-message': if (!allMessages.some(message => message.id === data.id)) allMessages.push({ type: 'file', ...data }); renderMessages(); break;
     case 'message-receipt': {
       const message = allMessages.find(item => item.id === data.id);
       if (message) { const key = data.kind === 'read' ? 'readBy' : 'deliveredTo'; message[key] ||= []; if (!message[key].includes(data.clientId)) message[key].push(data.clientId); renderMessages(); }
@@ -131,51 +171,42 @@ function handleEvent(event, data) {
     case 'signal': receiveSignal(data).catch(error => toast(`تعذر إعداد الاتصال: ${error.message}`)); break;
   }
 }
-function connect(address, port) {
-  if (connected || connecting) return;
-  connecting = true;
-  currentHost = { address, port };
-  $('connectionText').textContent = `الاتصال بـ ${address}…`;
-  if (!window.io) { connecting = false; return toast('ملف الاتصال المحلي غير متوفر؛ أعد تثبيت التطبيق.'); }
-  socket?.disconnect();
-  socket = window.io(`http://${address}:${port}`, { transports: ['websocket', 'polling'], timeout: 5000, reconnection: true });
-  for (const event of ['connect', 'connect_error', 'disconnect', 'identity', 'history', 'members', 'contacts', 'groups', 'system-message', 'chat-message', 'file-message', 'message-receipt', 'signal', 'notice']) {
-    socket.on(event, data => {
-      if (event === 'connect') { socket.emit('join', { name: myName, clientId }); handleEvent(event, { id: socket.id }); }
-      else handleEvent(event, data);
-    });
-  }
+function connect(address, port, local = false) {
+  if (!window.io) return toast('ملف الاتصال المحلي غير متوفر؛ أعد تثبيت التطبيق.');
+  const key = `${address}:${port}`;
+  if (connectionSockets.get(key)?.connected || connectionSockets.get(key)?.active) return;
+  if (local) { localPeerEndpoint = { address: '127.0.0.1', port }; connecting = true; }
+  else $('connectionText').textContent = `اكتشاف نظير ${address}…`;
+  const connection = window.io(`http://${address}:${port}`, { transports: ['websocket', 'polling'], timeout: 5000, reconnection: true });
+  connection._fursanAddress = key; connectionSockets.set(key, connection);
+  const events = ['connect_error', 'disconnect', 'identity', 'history', 'members', 'contacts', 'groups', 'system-message', 'chat-message', 'file-message', 'message-receipt', 'signal', 'notice', 'peer-profile'];
+  connection.on('connect', () => {
+    if (local) socket = connection;
+    connection.emit('join', { name: myName, clientId, local });
+    handleEvent('connect', { id: connection.id }, connection, local);
+  });
+  for (const event of events) connection.on(event, data => handleEvent(event, data, connection, local));
 }
-window.wasel.onRoomFound(room => {
-  if (!connected && !connecting && !hostMode) connect(room.address, room.port);
+window.wasel.onPeerFound(room => {
+  const key = `${room.address}:${room.port}`;
+  if (!lanAddressesSeen.has(key)) { lanAddressesSeen.add(key); connect(room.address, room.port, false); }
 });
-window.wasel.onRoomStarted(data => {
-  hostMode = true;
-  $('roomBanner').classList.remove('hidden');
-  $('hostAddress').textContent = `العنوان: ${data.addresses.join(' · ')} — المنفذ ${data.port}`;
-  connect('127.0.0.1', data.port);
+const lanAddressesSeen = new Set();
+window.wasel.onPeerStarted(data => {
+  $('peerBanner').classList.remove('hidden');
+  $('peerAddress').textContent = `نظير جاهز · العناوين: ${data.addresses.join(' · ')} · المنفذ ${data.port}`;
+  connect('127.0.0.1', data.port, true);
 });
 window.wasel.onNotice(message => toast(message));
-$('createRoom').onclick = async () => {
-  const button = $('createRoom');
-  socket?.disconnect(); socket = null; connected = false; connecting = false; hostMode = true;
-  button.disabled = true; button.textContent = 'جارٍ إنشاء الغرفة…';
-  try {
-    const result = await window.wasel.startRoom();
-    if (!result.ok) { hostMode = false; toast(result.error || 'تعذر إنشاء الغرفة'); button.disabled = false; button.textContent = '＋ إنشاء غرفة جديدة'; return; }
-    button.textContent = 'الغرفة تعمل على هذا الجهاز';
-    toast('تم إنشاء الغرفة؛ تأكد من اتصال بقية الأجهزة بالشبكة نفسها.');
-  } catch (error) {
-    hostMode = false; toast(`تعذر إنشاء الغرفة: ${error.message}`); button.disabled = false; button.textContent = '＋ إنشاء غرفة جديدة';
-  }
-};
 function sendText() {
   const input = $('messageInput');
   const text = input.value.trim();
   if (!text) return;
-  if (!connected) return toast('انتظر اتصال الجهاز بالمضيف');
+  if (!connected) return toast('انتظر اتصال النظير المحلي');
   const target = selectedTarget();
-  socket?.emit('chat', { text, ...target });
+  const payload = { id: crypto.randomUUID(), text, ...target };
+  if (target.channel === 'general') payload.recipientIds = contacts.map(contact => contact.clientId).filter(id => id !== clientId);
+  emitToTarget('chat', payload, target);
   input.value = ''; input.style.height = 'auto';
 }
 function selectedTarget() {
@@ -207,55 +238,53 @@ function queueFiles(files, folder = false) {
 }
 function renderTransfers() {
   $('transferList').innerHTML = [...transfers.values()].map(job => {
-    const percent = job.file.size ? Math.min(100, Math.floor(job.offset * 100 / job.file.size)) : 0;
+    const percent = job.total ? Math.min(100, Math.floor(job.offset * 100 / job.total)) : 0;
     return `<div class="transfer-item"><div class="transfer-title"><b>${escapeHtml(job.name)}</b><span>${job.state} · ${percent}%</span><button data-pause="${job.id}" class="call-control">${job.paused ? 'استئناف' : 'إيقاف مؤقت'}</button><button data-cancel="${job.id}" class="call-control">إلغاء</button></div><progress max="100" value="${percent}"></progress></div>`;
   }).join('');
   document.querySelectorAll('[data-pause]').forEach(button => button.onclick = () => { const job = transfers.get(button.dataset.pause); if (job) { job.paused = !job.paused; job.state = job.paused ? 'متوقف مؤقتاً' : 'جارٍ الرفع'; if (!job.paused) { job.resume?.(); job.resume = null; runUpload(job); } renderTransfers(); } });
-  document.querySelectorAll('[data-cancel]').forEach(button => button.onclick = () => { const job = transfers.get(button.dataset.cancel); if (job) { job.canceled = true; socket?.emit('upload-cancel', { transferId: job.id }); transfers.delete(job.id); renderTransfers(); } });
+  document.querySelectorAll('[data-cancel]').forEach(button => button.onclick = () => { const job = transfers.get(button.dataset.cancel); if (job) { job.canceled = true; for (const peer of endpointSockets(job.target)) { const id = job.transferIds?.get(peer._fursanAddress); if (id) peer.emit('upload-cancel', { transferId: id }); } transfers.delete(job.id); renderTransfers(); } });
 }
-function socketAck(event, payload) {
+function socketAck(connection, event, payload) {
   return new Promise((resolve, reject) => {
-    if (!socket?.connected) return reject(new Error('انقطع الاتصال'));
-    const timer = setTimeout(() => reject(new Error('انتهت مهلة الرفع')), 12000);
-    socket.emit(event, payload, response => { clearTimeout(timer); if (response?.ok) resolve(response); else reject(new Error(response?.error || 'تعذر إكمال النقل')); });
+    if (!connection?.connected) return reject(new Error('انقطع اتصال النظير'));
+    const timer = setTimeout(() => reject(new Error('انتهت مهلة النقل')), 12000);
+    connection.emit(event, payload, response => { clearTimeout(timer); if (response?.ok) resolve(response); else reject(new Error(response?.error || 'تعذر إكمال النقل')); });
   });
-}
-async function waitConnected(job) {
-  while (!job.canceled && (!connected || !socket?.connected)) {
-    job.state = 'بانتظار الشبكة'; renderTransfers();
-    await new Promise(resolve => socket?.once('connect', resolve) || setTimeout(resolve, 3000));
-  }
 }
 async function runUpload(job) {
   if (job.running) return;
   job.running = true;
+  const destinations = endpointSockets(job.target);
+  if (!destinations.length) { job.state = 'لا يوجد نظير متصل'; job.paused = true; job.running = false; renderTransfers(); return; }
+  job.total = job.file.size * destinations.length; job.completedPeers ||= new Set(); job.offset = job.file.size * job.completedPeers.size; job.transferIds ||= new Map();
   try {
-    while (!job.canceled && job.offset < job.file.size) {
-      if (job.paused) { await new Promise(resolve => { job.resume = resolve; }); continue; }
-      await waitConnected(job);
-      if (job.canceled) break;
-      job.state = 'جارٍ الرفع';
-      const init = await socketAck('upload-init', { transferId: job.id, name: job.name, mime: job.file.type, size: job.file.size, ...job.target });
-      job.offset = init.offset;
-      while (!job.canceled && !job.paused && job.offset < job.file.size) {
-        const end = Math.min(job.offset + 48 * 1024, job.file.size);
-        const bytes = new Uint8Array(await job.file.slice(job.offset, end).arrayBuffer());
+    job.completedPeers ||= new Set();
+    for (let peerIndex = 0; peerIndex < destinations.length && !job.canceled; peerIndex++) {
+      const connection = destinations[peerIndex];
+      if (job.completedPeers.has(connection._fursanAddress)) continue;
+      const transferKey = connection._fursanAddress;
+      const transferId = job.transferIds.get(transferKey) || crypto.randomUUID();
+      job.transferIds.set(transferKey, transferId); job.activeTransferId = transferId;
+      const init = await socketAck(connection, 'upload-init', { transferId, name: job.name, mime: job.file.type, size: job.file.size, ...job.target });
+      let offset = init.offset;
+      while (!job.canceled && offset < job.file.size) {
+        if (job.paused) { await new Promise(resolve => { job.resume = resolve; }); continue; }
+        const end = Math.min(offset + 48 * 1024, job.file.size);
+        const bytes = new Uint8Array(await job.file.slice(offset, end).arrayBuffer());
         let binary = ''; for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-        const response = await socketAck('upload-chunk', { transferId: job.id, offset: job.offset, data: btoa(binary) });
-        job.offset = response.offset; renderTransfers();
+        const response = await socketAck(connection, 'upload-chunk', { transferId, offset, data: btoa(binary) });
+        offset = response.offset; job.offset = peerIndex * job.file.size + offset; job.state = `إرسال مباشر إلى ${peerIndex + 1}/${destinations.length}`; renderTransfers();
       }
+      if (!job.canceled) { await socketAck(connection, 'upload-complete', { transferId }); job.transferIds.delete(transferKey); job.completedPeers.add(transferKey); }
     }
-    if (!job.canceled && job.offset === job.file.size) {
-      await socketAck('upload-complete', { transferId: job.id }); job.state = 'اكتمل'; renderTransfers();
-      setTimeout(() => { transfers.delete(job.id); renderTransfers(); }, 5000);
-    }
+    if (!job.canceled) { job.state = 'اكتمل الإرسال المباشر'; job.offset = job.total; renderTransfers(); setTimeout(() => { transfers.delete(job.id); renderTransfers(); }, 5000); }
   } catch (error) {
     if (!job.canceled) { job.state = 'تعذر النقل — اضغط استئناف'; job.paused = true; toast(error.message); }
   } finally { job.running = false; renderTransfers(); }
 }
 $('chatSelect').onchange = event => selectChat(event.target.value);
 $('newGroupBtn').onclick = () => {
-  if (!connected) return toast('اتصل بالغرفة لإنشاء مجموعة.');
+  if (!connected) return toast('اتصل بشبكة الأقران لإنشاء مجموعة.');
   const eligible = contacts.filter(contact => contact.clientId !== clientId);
   if (!eligible.length) return toast('لا يوجد مستخدمون آخرون معروفون بعد.');
   const choices = eligible.map((item, index) => `${index + 1}. ${item.name}${item.online ? '' : ' (غير متصل)'}`).join('\n');
@@ -263,11 +292,11 @@ $('newGroupBtn').onclick = () => {
   const input = prompt(`أدخل أرقام الأعضاء مفصولة بفواصل:\n${choices}`, eligible.map((_, index) => index + 1).join(','));
   if (!input) return;
   const members = input.split(',').map(value => eligible[Number(value.trim()) - 1]?.clientId).filter(Boolean);
-  socket.emit('create-group', { name, members });
+  emitToTarget('create-group', { id: crypto.randomUUID(), name, members, ownerId: clientId }, { channel: 'general' });
 };
 $('broadcastBtn').onclick = $('broadcastHere').onclick = () => {
   const text = prompt('اكتب رسالة البث التي ستصل إلى جميع المستخدمين المعروفين، بمن فيهم غير المتصلين:');
-  if (text?.trim()) socket?.emit('broadcast', { text: text.trim() });
+  if (text?.trim()) emitToTarget('broadcast', { id: crypto.randomUUID(), text: text.trim(), recipientIds: contacts.map(contact => contact.clientId).filter(id => id !== clientId) }, { channel: 'general' });
 };
 $('searchBtn').onclick = () => { $('searchBar').classList.toggle('hidden'); $('searchInput').focus(); };
 $('searchInput').oninput = event => { searchTerm = event.target.value.trim(); renderMessages(); };
@@ -288,7 +317,7 @@ function addVideo(label, stream, local = false, peerId = '') {
 function showCallPanel(mode) {
   callMode = mode;
   $('callTitle').textContent = mode === 'video' ? 'مكالمة فيديو' : 'مكالمة صوتية';
-  $('callStatus').textContent = 'اتصال محلي مباشر';
+  $('callStatus').textContent = 'اتصال WebRTC مباشر بين الأقران';
   $('callPanel').classList.remove('hidden'); $('videoGrid').innerHTML = '';
   $('cameraBtn').classList.toggle('hidden', mode !== 'video');
   $('muteBtn').textContent = 'كتم الصوت'; $('cameraBtn').textContent = 'إيقاف الكاميرا';
@@ -296,15 +325,15 @@ function showCallPanel(mode) {
 }
 async function startCall(mode, initiator = true) {
   if (callMode || startingCall) return toast('هناك مكالمة قائمة بالفعل. أنهها قبل بدء مكالمة أخرى.');
-  if (!connected) return toast('اتصل بغرفة محلية أولاً');
+  if (!connected) return toast('اتصل بشبكة الأقران أولاً');
   startingCall = true;
   try {
     localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: mode === 'video' });
     showCallPanel(mode);
     if (initiator) {
       // Signaling over one ordered Socket.IO channel: invitation precedes SDP offers.
-      socket?.emit('signal', { description: { type: 'call-start', mode } });
-      currentMembers.filter(member => member.id !== window._socketId).forEach(member => makePeer(member.id, true));
+      for (const peer of peerSockets.values()) peer.emit('signal', { description: { type: 'call-start', mode } });
+      [...peerSockets.keys()].forEach(id => makePeer(id, true));
     } else {
       for (const [id, packet] of deferredDescriptions) await processDescription(id, packet);
       deferredDescriptions.clear();
@@ -335,7 +364,7 @@ function makePeer(id, offer) {
   pc = new RTCPeerConnection({ iceServers: [] });
   peers.set(id, pc);
   localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
-  pc.onicecandidate = event => { if (event.candidate) socket?.emit('signal', { to: id, candidate: event.candidate }); };
+  pc.onicecandidate = event => { if (event.candidate) signalToPeer(id, { candidate: event.candidate }); };
   pc.ontrack = event => {
     const stream = event.streams[0];
     if (!stream) return;
@@ -352,7 +381,7 @@ function makePeer(id, offer) {
     if (pc.connectionState === 'failed') toast('تعذر إنشاء اتصال مباشر؛ تحقق من السماح بحركة UDP بين الأجهزة.');
   };
   if (offer) pc.createOffer().then(description => pc.setLocalDescription(description)).then(() => {
-    socket?.emit('signal', { to: id, description: pc.localDescription });
+    signalToPeer(id, { description: pc.localDescription });
   }).catch(error => toast(`تعذر بدء الاتصال: ${error.message}`));
   return pc;
 }
@@ -365,7 +394,7 @@ async function processDescription(id, packet) {
   deferredCandidates.delete(id);
   if (packet.description.type === 'offer') {
     const answer = await pc.createAnswer(); await pc.setLocalDescription(answer);
-    socket?.emit('signal', { to: id, description: pc.localDescription });
+    signalToPeer(id, { description: pc.localDescription });
   }
 }
 async function receiveSignal(packet) {
@@ -392,7 +421,7 @@ async function receiveSignal(packet) {
   }
 }
 $('endCall').onclick = () => {
-  socket?.emit('signal', { description: { type: 'call-end' } });
+  for (const peer of peerSockets.values()) peer.emit('signal', { description: { type: 'call-end' } });
   closeCall();
 };
 function closeCall() {
@@ -401,7 +430,8 @@ function closeCall() {
   localStream?.getTracks().forEach(track => track.stop()); localStream = null; callMode = null;
   $('callPanel').classList.add('hidden'); $('audioNodes').innerHTML = '';
 }
-window.addEventListener('beforeunload', () => { if (callMode) socket?.emit('signal', { description: { type: 'call-end' } }); socket?.disconnect(); });
+window.addEventListener('beforeunload', () => { if (callMode) for (const peer of peerSockets.values()) peer.emit('signal', { description: { type: 'call-end' } }); for (const connection of connectionSockets.values()) connection.disconnect(); });
 window.wasel.lanInfo().then(info => {
-  if (!connected) $('connectionText').textContent = `بانتظار مضيف على الشبكة · ${info.hostname}`;
-});
+  if (!connected) $('connectionText').textContent = `تشغيل نظير مستقل على ${info.hostname}…`;
+  return window.wasel.startPeer();
+}).then(result => { if (result?.ok) { localPeerEndpoint = { address: '127.0.0.1', port: result.port }; connect('127.0.0.1', result.port, true); } else if (result?.error) toast(result.error); }).catch(error => toast(`تعذر تشغيل نظير P2P: ${error.message}`));

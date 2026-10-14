@@ -90,3 +90,15 @@ test('bounds history length', t => {
   assert.equal(f.store.publicHistory().length, MAX_HISTORY);
   assert.equal(f.store.publicHistory()[0].id, '1');
 });
+
+
+test('persists the same peer-to-peer group id idempotently across nodes', t => {
+  const f = fixture(); t.after(f.cleanup);
+  const id = crypto.randomUUID();
+  const spec = { id, name: 'فريق العمل', ownerId: 'alice-identity-0001', members: ['bob-identity-000001'] };
+  const first = f.store.createGroup(spec);
+  const repeated = f.store.createGroup(spec);
+  assert.equal(first.id, id);
+  assert.deepEqual(repeated, first);
+  assert.equal(f.store.groups.length, 1);
+});
