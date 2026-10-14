@@ -37,3 +37,4 @@ google-services.json
 node_modules/
 release/
 .DS_Store
+artifacts/
