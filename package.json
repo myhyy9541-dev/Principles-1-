@@ -7,7 +7,7 @@
   "license": "MIT",
   "scripts": {
     "start": "electron .",
-    "build:win": "electron-builder --win --publish never",
+    "build:win": "electron-builder --win nsis --publish never",
     "build:portable": "electron-builder --win portable --publish never",
     "test": "node --test"
   },
