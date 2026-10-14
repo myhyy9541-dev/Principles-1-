@@ -1,19 +1,19 @@
 <!doctype html>
-<html lang="ar" dir="rtl"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>واصل</title><link rel="stylesheet" href="style.css"></head>
+<html lang="ar" dir="rtl"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>فرسان LAN</title><link rel="stylesheet" href="style.css"></head>
 <body><div class="app-shell">
-  <aside class="sidebar"><div class="brand"><div class="brand-mark">و</div><div><b>واصل</b><small>تواصل المنشأة</small></div></div>
-    <div class="workspace"><span class="green-dot"></span><div><b id="roomTitle">شبكة المنشأة</b><small id="connectionText">جارٍ البحث عن غرفة محلية…</small></div></div>
-    <button id="createRoom" class="create-room">＋ إنشاء غرفة جديدة</button>
+  <aside class="sidebar"><div class="brand"><div class="brand-mark">ف</div><div><b>فرسان LAN</b><small>تواصل محلي آمن</small></div></div>
+    <div class="workspace"><span class="green-dot"></span><div><b id="roomTitle">شبكة المنشأة</b><small id="connectionText">جارٍ تشغيل نظير P2P…</small></div></div>
+    <button id="createRoom" class="create-room">تشغيل نظير P2P</button>
     <div class="section-label">المحادثات</div><div id="chatList"><button class="room-item active" data-kind="general"><span class="hash">#</span><span>عام</span><span class="online-pill">محلي</span></button></div>
     <button id="newGroupBtn" class="side-action">＋ إنشاء مجموعة</button><button id="broadcastBtn" class="side-action">↗ رسالة بث</button>
     <div class="section-label member-heading">متصلون الآن <span id="memberCount">0</span></div><div id="members" class="members"></div>
-    <div class="side-foot"><span class="shield">◆</span> اتصال داخل الشبكة فقط</div>
+    <div class="side-foot"><span class="shield">◆</span> اتصال P2P داخل الشبكة المحلية</div>
   </aside>
-  <main class="main"><header class="topbar"><div><h1 id="chatTitle">المحادثة العامة</h1><p><span class="green-dot"></span> رسائلك لا تغادر شبكة المنشأة</p></div><div class="top-actions"><button id="searchBtn" class="icon-btn" title="بحث في السجل">⌕ <span>بحث</span></button><button id="exportBtn" class="icon-btn" title="تصدير السجل">⇩ <span>تصدير</span></button><button id="voiceBtn" class="icon-btn" title="بدء اتصال صوتي">☎ <span>صوت</span></button><button id="videoBtn" class="icon-btn primary" title="بدء اتصال مرئي">▣ <span>فيديو</span></button></div></header>
+  <main class="main"><header class="topbar"><div><h1 id="chatTitle">المحادثة العامة</h1><p><span class="green-dot"></span> اتصالات مباشرة بين الأجهزة على الشبكة المحلية</p></div><div class="top-actions"><button id="searchBtn" class="icon-btn" title="بحث في السجل">⌕ <span>بحث</span></button><button id="exportBtn" class="icon-btn" title="تصدير السجل">⇩ <span>تصدير</span></button><button id="voiceBtn" class="icon-btn" title="بدء اتصال صوتي">☎ <span>صوت</span></button><button id="videoBtn" class="icon-btn primary" title="بدء اتصال مرئي">▣ <span>فيديو</span></button></div></header>
     <div id="searchBar" class="search-bar hidden"><input id="searchInput" placeholder="ابحث في الرسائل…"><span id="searchCount"></span><button id="clearSearch" class="call-control">مسح</button></div>
     <div id="chatToolbar" class="chat-toolbar"><label for="chatSelect">إرسال إلى</label><select id="chatSelect"><option value="general">المحادثة العامة</option></select><button id="broadcastHere" class="call-control">بث للجميع</button></div>
-    <div id="roomBanner" class="banner hidden"><b>مضيف الغرفة جاهز</b><span id="hostAddress"></span></div>
-    <section id="messages" class="messages"><div class="welcome"><div class="welcome-icon">✦</div><h2>مرحباً بك في واصل</h2><p>تواصل وشارك الملفات مع فريقك على الشبكة المحلية، حتى دون اتصال بالإنترنت.</p><div class="features"><span>● دردشة فورية</span><span>● مشاركة الملفات</span><span>● صوت وفيديو</span></div></div></section>
+    <div id="roomBanner" class="banner hidden"><b>نظير P2P جاهز</b><span id="hostAddress"></span></div>
+    <section id="messages" class="messages"><div class="welcome"><div class="welcome-icon">✦</div><h2>مرحباً بك في فرسان LAN</h2><p>تواصل وشارك الملفات مع فريقك على الشبكة المحلية، حتى دون اتصال بالإنترنت.</p><div class="features"><span>● دردشة فورية</span><span>● مشاركة الملفات</span><span>● صوت وفيديو</span></div></div></section>
     <div id="callPanel" class="call-panel hidden"><div class="call-head"><b id="callTitle">اتصال مباشر</b><span id="callStatus">جارٍ الاتصال…</span><button id="muteBtn" class="call-control">كتم الصوت</button><button id="cameraBtn" class="call-control hidden">إيقاف الكاميرا</button><button id="endCall" class="end-call">إنهاء الاتصال</button></div><div id="videoGrid" class="video-grid"></div><div id="audioNodes" class="audio-nodes"></div></div>
     <div class="composer-wrap"><div id="filePreview" class="file-preview hidden"></div><div id="transferList" class="transfer-list"></div><div class="composer"><button id="attachBtn" class="attach" title="إرفاق ملفات">＋</button><button id="folderBtn" class="attach" title="إرسال مجلد">▱</button><input type="file" id="fileInput" multiple hidden><input type="file" id="folderInput" webkitdirectory directory multiple hidden><textarea id="messageInput" rows="1" placeholder="اكتب رسالة…"></textarea><button id="sendBtn" class="send" title="إرسال">➤</button></div><div class="hint">Enter للإرسال · Shift+Enter لسطر جديد · حد الملف 10 م.ب للملف</div></div>
   </main>

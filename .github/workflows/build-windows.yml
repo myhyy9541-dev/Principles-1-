@@ -19,6 +19,6 @@ jobs:
       - run: npm run build:win
       - uses: actions/upload-artifact@v4
         with:
-          name: wasel-windows-installers
+          name: fursan-lan-windows-installers
           path: release/*
           if-no-files-found: error

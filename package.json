@@ -1,13 +1,13 @@
 {
-  "name": "wasel-lan",
-  "version": "0.3.0",
-  "description": "تطبيق تواصل محلي للمنشآت دون إنترنت",
+  "name": "fursan-lan",
+  "version": "0.4.0",
+  "description": "فرسان LAN — تواصل عربي عبر الشبكة المحلية",
   "main": "src/main.js",
-  "author": "Wasel LAN",
+  "author": "Fursan LAN",
   "license": "MIT",
   "scripts": {
     "start": "electron .",
-    "build:win": "electron-builder --win nsis --publish never",
+    "build:win": "electron-builder --win --publish never",
     "build:portable": "electron-builder --win portable --publish never",
     "test": "node --test"
   },
@@ -17,12 +17,12 @@
     "socket.io-client": "^4.8.1"
   },
   "devDependencies": {
-    "electron": "^35.1.5",
-    "electron-builder": "^26.0.12"
+    "electron": "^44.7.2",
+    "electron-builder": "^26.15.3"
   },
   "build": {
-    "appId": "com.wasel.lan",
-    "productName": "واصل - تواصل المنشأة",
+    "appId": "com.fursan.lan",
+    "productName": "فرسان LAN",
     "directories": {
       "output": "release"
     },
@@ -35,7 +35,7 @@
         "nsis",
         "portable"
       ],
-      "artifactName": "Wasel-LAN-${version}-${arch}.${ext}"
+      "artifactName": "Fursan-LAN-${version}-${arch}.${ext}"
     },
     "nsis": {
       "oneClick": false,

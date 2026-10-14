@@ -47,11 +47,17 @@ class RoomStore {
     else this.contacts.push(clean);
     this.atomicWrite(this.contactsPath, this.contacts);
   }
-  createGroup({ name, members, ownerId }) {
+  createGroup({ id, name, members, ownerId }) {
     const cleanName = String(name || '').trim().slice(0, 60);
     const cleanMembers = [...new Set([ownerId, ...members].filter(id => typeof id === 'string' && id.length <= 80))];
     if (!cleanName || cleanMembers.length < 2) throw new Error('أضف اسماً للمجموعة وعضواً آخر على الأقل.');
-    const group = { id: crypto.randomUUID(), name: cleanName, members: cleanMembers, ownerId, createdAt: Date.now() };
+    const groupId = /^[0-9a-f-]{36}$/i.test(String(id || '')) ? id : crypto.randomUUID();
+    const existing = this.groups.find(item => item.id === groupId);
+    if (existing) {
+      if (existing.name !== cleanName || existing.ownerId !== ownerId || JSON.stringify([...existing.members].sort()) !== JSON.stringify([...cleanMembers].sort())) throw new Error('معرف المجموعة مستخدم بتفاصيل مختلفة.');
+      return existing;
+    }
+    const group = { id: groupId, name: cleanName, members: cleanMembers, ownerId, createdAt: Date.now() };
     this.groups.push(group);
     this.atomicWrite(this.groupsPath, this.groups);
     return group;
