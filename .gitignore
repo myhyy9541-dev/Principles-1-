@@ -32,3 +32,8 @@ google-services.json
 
 # Android Profiling
 *.hprof
+
+# Node / Electron
+node_modules/
+release/
+.DS_Store
