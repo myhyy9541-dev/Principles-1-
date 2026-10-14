@@ -1,9 +1,9 @@
 {
   "name": "fursan-lan",
-  "version": "0.4.0",
-  "description": "فرسان LAN — تواصل عربي عبر الشبكة المحلية",
+  "version": "0.4.1",
+  "description": "فرسان لان — مراسلة عربية مباشرة بين الأقران على الشبكة المحلية",
   "main": "src/main.js",
-  "author": "Fursan LAN",
+  "author": "فريق فرسان لان",
   "license": "MIT",
   "scripts": {
     "start": "electron .",
@@ -22,7 +22,7 @@
   },
   "build": {
     "appId": "com.fursan.lan",
-    "productName": "فرسان LAN",
+    "productName": "فرسان لان",
     "directories": {
       "output": "release"
     },

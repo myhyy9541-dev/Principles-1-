@@ -101,7 +101,7 @@ class RoomStore {
     if (!match) throw new Error('صيغة الملف غير مدعومة.');
     const bytes = Buffer.from(match[2], 'base64');
     if (!bytes.length || bytes.length > MAX_FILE_BYTES) throw new Error('الحد الأقصى للملف 10 ميغابايت.');
-    if (this.storedBytes + bytes.length > MAX_STORAGE_BYTES) throw new Error('امتلأت مساحة مشاركة الملفات (1 غيغابايت) على جهاز المضيف.');
+    if (this.storedBytes + bytes.length > MAX_STORAGE_BYTES) throw new Error('امتلأت مساحة مشاركة الملفات (1 غيغابايت) على هذا الجهاز.');
     const safeName = path.basename(String(name || 'ملف').replace(/[\\\r\n\0]/g, '_')).slice(0, 180) || 'ملف';
     const contentType = SAFE_MIME.test(String(mime || match[1] || '')) ? String(mime || match[1]) : 'application/octet-stream';
     const id = crypto.randomUUID();
@@ -146,7 +146,7 @@ class RoomStore {
     const meta = this.uploads.get(transferId);
     if (!meta || meta.offset !== meta.size) throw new Error('لم يكتمل رفع الملف بعد.');
     if (meta.senderClientId !== senderClientId) throw new Error('لا تملك صلاحية إكمال هذا النقل.');
-    if (this.storedBytes + meta.size > MAX_STORAGE_BYTES) throw new Error('امتلأت مساحة مشاركة الملفات (1 غيغابايت) على جهاز المضيف.');
+    if (this.storedBytes + meta.size > MAX_STORAGE_BYTES) throw new Error('امتلأت مساحة مشاركة الملفات (1 غيغابايت) على هذا الجهاز.');
     const filePath = path.join(this.filesDir, transferId + '.part');
     const id = crypto.randomUUID();
     fs.renameSync(filePath, path.join(this.filesDir, id));

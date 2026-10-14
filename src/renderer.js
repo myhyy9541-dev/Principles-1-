@@ -7,7 +7,7 @@ if (!myName) {
 }
 let clientId = localStorage.getItem('wasel-client-id');
 if (!clientId) { clientId = `w${crypto.randomUUID().replaceAll('-', '')}`; localStorage.setItem('wasel-client-id', clientId); }
-let connected = false, connecting = false, localHost = null;
+let connected = false, connecting = false, localPeerEndpoint = null;
 let pendingFile = null, localStream = null, callMode = null, currentMembers = [], socket = null;
 const peerSockets = new Map(), connectionSockets = new Map();
 let contacts = [], groups = [], currentChat = 'general', allMessages = [], searchTerm = '';
@@ -26,8 +26,8 @@ function toast(message) {
 }
 function formatTime(value) { return new Date(value || Date.now()).toLocaleTimeString('ar', { hour: '2-digit', minute: '2-digit' }); }
 function fileUrl(id) {
-  if (!localHost || !/^[0-9a-f-]{36}$/i.test(String(id))) return '#';
-  return `http://${localHost.address}:${localHost.port}/api/files/${encodeURIComponent(id)}`;
+  if (!localPeerEndpoint || !/^[0-9a-f-]{36}$/i.test(String(id))) return '#';
+  return `http://${localPeerEndpoint.address}:${localPeerEndpoint.port}/api/files/${encodeURIComponent(id)}`;
 }
 function endpointSockets(target = {}) {
   const chosen = [socket?.connected ? socket : null];
@@ -97,7 +97,7 @@ function renderChatOptions() {
   const selected = currentChat;
   select.innerHTML = '<option value="general">المحادثة العامة</option>' + contacts.filter(contact => contact.clientId !== clientId).map(contact => `<option value="user:${escapeHtml(contact.clientId)}">خاص: ${escapeHtml(contact.name)}${contact.online ? '' : ' (غير متصل)'}</option>`).join('') + groups.map(group => `<option value="group:${escapeHtml(group.id)}">مجموعة: ${escapeHtml(group.name)}</option>`).join('');
   if ([...select.options].some(option => option.value === selected)) select.value = selected;
-  $('chatList').innerHTML = `<button class="room-item ${currentChat === 'general' ? 'active' : ''}" data-chat="general"><span class="hash">#</span><span>عام</span><span class="online-pill">محلي</span></button>` + contacts.filter(contact => contact.clientId !== clientId).map(contact => `<button class="room-item ${currentChat === `user:${contact.clientId}` ? 'active' : ''}" data-chat="user:${escapeHtml(contact.clientId)}"><span class="avatar">${escapeHtml(contact.name.slice(0,1))}</span><span>${escapeHtml(contact.name)}</span>${contact.online ? '<span class="green-dot"></span>' : '<span class="offline-mark">○</span>'}</button>`).join('') + groups.map(group => `<button class="room-item ${currentChat === `group:${group.id}` ? 'active' : ''}" data-chat="group:${escapeHtml(group.id)}"><span class="hash">#</span><span>${escapeHtml(group.name)}</span></button>`).join('');
+  $('chatList').innerHTML = `<button class="room-item ${currentChat === 'general' ? 'active' : ''}" data-chat="general"><span class="hash">#</span><span>عام</span><span class="online-pill">عام</span></button>` + contacts.filter(contact => contact.clientId !== clientId).map(contact => `<button class="room-item ${currentChat === `user:${contact.clientId}` ? 'active' : ''}" data-chat="user:${escapeHtml(contact.clientId)}"><span class="avatar">${escapeHtml(contact.name.slice(0,1))}</span><span>${escapeHtml(contact.name)}</span>${contact.online ? '<span class="green-dot"></span>' : '<span class="offline-mark">○</span>'}</button>`).join('') + groups.map(group => `<button class="room-item ${currentChat === `group:${group.id}` ? 'active' : ''}" data-chat="group:${escapeHtml(group.id)}"><span class="hash">#</span><span>${escapeHtml(group.name)}</span></button>`).join('');
   document.querySelectorAll('[data-chat]').forEach(button => button.onclick = () => selectChat(button.dataset.chat));
 }
 function selectChat(chat) {
@@ -110,7 +110,7 @@ function selectChat(chat) {
 function handleEvent(event, data, source, local = false) {
   switch (event) {
     case 'connect':
-      if (local) { connected = true; connecting = false; window._socketId = data?.id; $('connectionText').textContent = 'متصل بالشبكة المحلية — P2P'; $('roomTitle').textContent = 'شبكة الأقران'; }
+      if (local) { connected = true; connecting = false; window._socketId = data?.id; $('connectionText').textContent = 'متصل بالشبكة المحلية — P2P'; $('networkTitle').textContent = 'شبكة الأقران'; }
       break;
     case 'disconnect':
       connectionSockets.delete(source?._fursanAddress || '');
@@ -175,7 +175,7 @@ function connect(address, port, local = false) {
   if (!window.io) return toast('ملف الاتصال المحلي غير متوفر؛ أعد تثبيت التطبيق.');
   const key = `${address}:${port}`;
   if (connectionSockets.get(key)?.connected || connectionSockets.get(key)?.active) return;
-  if (local) { localHost = { address: '127.0.0.1', port }; connecting = true; }
+  if (local) { localPeerEndpoint = { address: '127.0.0.1', port }; connecting = true; }
   else $('connectionText').textContent = `اكتشاف نظير ${address}…`;
   const connection = window.io(`http://${address}:${port}`, { transports: ['websocket', 'polling'], timeout: 5000, reconnection: true });
   connection._fursanAddress = key; connectionSockets.set(key, connection);
@@ -193,24 +193,11 @@ window.wasel.onPeerFound(room => {
 });
 const lanAddressesSeen = new Set();
 window.wasel.onPeerStarted(data => {
-  $('roomBanner').classList.remove('hidden');
-  $('hostAddress').textContent = `نظير جاهز · العناوين: ${data.addresses.join(' · ')} · المنفذ ${data.port}`;
+  $('peerBanner').classList.remove('hidden');
+  $('peerAddress').textContent = `نظير جاهز · العناوين: ${data.addresses.join(' · ')} · المنفذ ${data.port}`;
   connect('127.0.0.1', data.port, true);
 });
 window.wasel.onNotice(message => toast(message));
-$('createRoom').textContent = 'تشغيل نظير P2P';
-$('createRoom').onclick = async () => {
-  const button = $('createRoom');
-  button.disabled = true; button.textContent = 'جارٍ تفعيل نظير P2P…';
-  try {
-    const result = await window.wasel.startPeer();
-    if (!result.ok) { toast(result.error || 'تعذر تشغيل النظير'); button.disabled = false; button.textContent = 'إعادة تشغيل نظير P2P'; return; }
-    button.textContent = 'نظير P2P جاهز';
-    connect('127.0.0.1', result.port, true); toast('النظير جاهز؛ سيجري اكتشاف الأجهزة وإرسال البيانات مباشرةً بينها.');
-  } catch (error) {
-    toast(`تعذر تشغيل النظير: ${error.message}`); button.disabled = false; button.textContent = 'إعادة تشغيل نظير P2P';
-  }
-};
 function sendText() {
   const input = $('messageInput');
   const text = input.value.trim();
@@ -447,4 +434,4 @@ window.addEventListener('beforeunload', () => { if (callMode) for (const peer of
 window.wasel.lanInfo().then(info => {
   if (!connected) $('connectionText').textContent = `تشغيل نظير مستقل على ${info.hostname}…`;
   return window.wasel.startPeer();
-}).then(result => { if (result?.ok) { localHost = { address: '127.0.0.1', port: result.port }; connect('127.0.0.1', result.port, true); } else if (result?.error) toast(result.error); }).catch(error => toast(`تعذر تشغيل نظير P2P: ${error.message}`));
+}).then(result => { if (result?.ok) { localPeerEndpoint = { address: '127.0.0.1', port: result.port }; connect('127.0.0.1', result.port, true); } else if (result?.error) toast(result.error); }).catch(error => toast(`تعذر تشغيل نظير P2P: ${error.message}`));

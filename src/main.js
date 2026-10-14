@@ -166,7 +166,7 @@ function createPeerEndpoint() {
       if (from) io.to(from).emit('message-receipt', { id: message.id, kind: 'read', clientId: socket.data.user.clientId });
     });
     socket.on('upload-init', (raw, acknowledge = () => {}) => {
-      if (!socket.data.user) return acknowledge({ ok: false, error: 'لم تنضم إلى الغرفة.' });
+      if (!socket.data.user) return acknowledge({ ok: false, error: 'لم تتصل بنقطة النظير.' });
       try {
         const group = raw?.groupId ? roomStore.groupById(String(raw.groupId)) : null;
         if (raw?.groupId && !group?.members.includes(socket.data.user.clientId)) throw new Error('لا تملك صلاحية المشاركة في هذه المجموعة.');
@@ -178,12 +178,12 @@ function createPeerEndpoint() {
       } catch (error) { acknowledge({ ok: false, error: error.message }); }
     });
     socket.on('upload-chunk', (raw, acknowledge = () => {}) => {
-      if (!socket.data.user || !withinRate(socket, 'upload-chunk', 1000)) return acknowledge({ ok: false, error: 'الرفع سريع جداً أو لم تنضم إلى الغرفة.' });
+      if (!socket.data.user || !withinRate(socket, 'upload-chunk', 1000)) return acknowledge({ ok: false, error: 'الرفع سريع جداً أو لم تتصل بنقطة النظير.' });
         try { acknowledge({ ok: true, offset: roomStore.appendUploadChunk(raw.transferId, raw.offset, raw.data, socket.data.user.clientId) }); }
       catch (error) { acknowledge({ ok: false, error: error.message }); }
     });
     socket.on('upload-complete', (raw, acknowledge = () => {}) => {
-      if (!socket.data.user) return acknowledge({ ok: false, error: 'لم تنضم إلى الغرفة.' });
+      if (!socket.data.user) return acknowledge({ ok: false, error: 'لم تتصل بنقطة النظير.' });
       try {
         const record = roomStore.finishUpload(String(raw?.transferId || ''), socket.data.user.clientId);
         const { diskName, ...message } = record;
@@ -222,7 +222,7 @@ function createPeerEndpoint() {
       const user = peers.get(socket.id); peers.delete(socket.id);
       if (user) {
         if (activeCall?.owner === socket.id) activeCall = null;
-        broadcastMembers(); broadcastContacts(); io.emit('system-message', { text: `${user.name} غادر الغرفة`, time: Date.now() });
+        broadcastMembers(); broadcastContacts(); io.emit('system-message', { text: `${user.name} انقطع اتصال`, time: Date.now() });
       }
     });
   });
@@ -236,7 +236,7 @@ async function startPeer() {
     createPeerEndpoint();
     const onError = error => {
       peerStarted = false;
-      resolve({ ok: false, error: error.code === 'EADDRINUSE' ? 'المنفذ 43821 مستخدم بالفعل. أغلق نسخة فرسان LAN الأخرى على هذا الجهاز.' : error.message });
+      resolve({ ok: false, error: error.code === 'EADDRINUSE' ? 'المنفذ 43821 مستخدم بالفعل. أغلق نسخة فرسان لان الأخرى على هذا الجهاز.' : error.message });
     };
     peerServer.once('error', onError);
     peerServer.listen(PEER_PORT, '0.0.0.0', () => {
@@ -250,7 +250,7 @@ async function startPeer() {
   return peerStarting;
 }
 function makeWindow() {
-  win = new BrowserWindow({ width: 1280, height: 820, minWidth: 900, minHeight: 620, backgroundColor: '#f4f7f7', title: 'فرسان LAN - تواصل محلي', webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true } });
+  win = new BrowserWindow({ width: 1280, height: 820, minWidth: 900, minHeight: 620, backgroundColor: '#f4f7f7', title: 'فرسان لان — مراسلة P2P محلية', webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true } });
   win.loadFile(path.join(__dirname, 'index.html'));
 }
 app.whenReady().then(() => {
