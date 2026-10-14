@@ -1,6 +1,6 @@
 {
   "name": "wasel-lan",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "تطبيق تواصل محلي للمنشآت دون إنترنت",
   "main": "src/main.js",
   "author": "Wasel LAN",
@@ -23,9 +23,25 @@
   "build": {
     "appId": "com.wasel.lan",
     "productName": "واصل - تواصل المنشأة",
-    "directories": { "output": "release" },
-    "files": ["src/**/*", "package.json"],
-    "win": { "target": ["nsis", "portable"], "artifactName": "Wasel-LAN-${version}-${arch}.${ext}" },
-    "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": true, "createDesktopShortcut": true, "createStartMenuShortcut": true }
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "artifactName": "Wasel-LAN-${version}-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
   }
 }
