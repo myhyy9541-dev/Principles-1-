@@ -6,7 +6,7 @@ on:
     paths:
       - "java-app/**"
       - ".github/workflows/build-windows.yml"
-  tags: ["v*"]
+    tags: ["v*"]
 permissions:
   contents: read
 jobs:
