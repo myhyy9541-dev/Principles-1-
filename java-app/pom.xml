@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.wasel</groupId>
+  <artifactId>wasel-java</artifactId>
+  <version>0.4.0</version>
+  <name>Wasel LAN Java</name>
+  <properties>
+    <maven.compiler.release>21</maven.compiler.release>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <jcef.version>152.0.6</jcef.version>
+    <jcef.natives.version>jcef-17e805a+cef-152.0.6+g708dc14+chromium-152.0.7977.83</jcef.natives.version>
+    <socketio.version>2.0.13</socketio.version>
+  </properties>
+  <build>
+    <extensions>
+      <extension><groupId>kr.motd.maven</groupId><artifactId>os-maven-plugin</artifactId><version>1.7.1</version></extension>
+    </extensions>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId><artifactId>maven-compiler-plugin</artifactId><version>3.13.0</version>
+        <configuration><release>21</release><encoding>UTF-8</encoding></configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId><artifactId>maven-surefire-plugin</artifactId><version>3.5.2</version>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId><artifactId>maven-dependency-plugin</artifactId><version>3.8.1</version>
+        <executions><execution><id>copy-runtime-dependencies</id><phase>package</phase><goals><goal>copy-dependencies</goal></goals><configuration><outputDirectory>${project.build.directory}/app-libs</outputDirectory><includeScope>runtime</includeScope></configuration></execution></executions>
+      </plugin>
+      <plugin>
+        <groupId>org.codehaus.mojo</groupId><artifactId>exec-maven-plugin</artifactId><version>3.5.0</version>
+        <configuration><mainClass>com.wasel.WaselApplication</mainClass></configuration>
+      </plugin>
+    </plugins>
+  </build>
+  <dependencies>
+    <dependency><groupId>com.corundumstudio.socketio</groupId><artifactId>netty-socketio</artifactId><version>${socketio.version}</version></dependency>
+    <dependency><groupId>me.friwi</groupId><artifactId>jcefmaven</artifactId><version>${jcef.version}</version></dependency>
+    <dependency><groupId>com.google.code.gson</groupId><artifactId>gson</artifactId><version>2.11.0</version></dependency>
+    <dependency><groupId>org.junit.jupiter</groupId><artifactId>junit-jupiter</artifactId><version>5.11.4</version><scope>test</scope></dependency>
+  </dependencies>
+  <profiles>
+    <profile>
+      <id>linux-x64</id><activation><os><name>Linux</name></os></activation>
+      <dependencies><dependency><groupId>me.friwi</groupId><artifactId>jcef-natives-linux-amd64</artifactId><version>${jcef.natives.version}</version></dependency></dependencies>
+    </profile>
+    <profile>
+      <id>windows-x64</id><activation><os><family>Windows</family></os></activation>
+      <dependencies><dependency><groupId>me.friwi</groupId><artifactId>jcef-natives-windows-amd64</artifactId><version>${jcef.natives.version}</version></dependency></dependencies>
+    </profile>
+  </profiles>
+</project>

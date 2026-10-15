@@ -1,24 +1,63 @@
-name: Build Windows installer
+name: Build Wasel Java for Windows
 on:
   workflow_dispatch:
   push:
-    tags: ["v*"]
+    branches: [main]
+    paths:
+      - "java-app/**"
+      - ".github/workflows/build-windows.yml"
+  tags: ["v*"]
 permissions:
   contents: read
 jobs:
-  build:
+  build-windows:
     runs-on: windows-latest
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-java@v4
         with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      - run: npm test
-      - run: npm run build:win
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+          cache-dependency-path: java-app/pom.xml
+      - name: Install WiX Toolset for jpackage
+        shell: pwsh
+        run: |
+          choco install wixtoolset --version=3.14.1 --yes --no-progress
+          $wix = Get-ChildItem "${env:ProgramFiles(x86)}\WiX Toolset v3.14\bin" -ErrorAction SilentlyContinue
+          if (-not $wix) { throw "WiX Toolset 3.14 was not installed." }
+          "${env:ProgramFiles(x86)}\WiX Toolset v3.14\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      - name: Test and package Java application
+        working-directory: java-app
+        run: mvn --batch-mode --no-transfer-progress clean test package
+      - name: Stage runtime and JCEF dependencies
+        shell: pwsh
+        working-directory: java-app
+        run: |
+          New-Item -ItemType Directory -Force -Path target\installer-input | Out-Null
+          Copy-Item target\wasel-java-0.4.0.jar target\installer-input\
+          Copy-Item target\app-libs\*.jar target\installer-input\
+          $count = (Get-ChildItem target\installer-input -Filter *.jar).Count
+          if ($count -lt 10) { throw "Dependency bundle is incomplete: only $count jars were staged." }
+          Write-Host "Staged $count application/runtime jars."
+      - name: Create portable Windows application image
+        shell: pwsh
+        working-directory: java-app
+        run: |
+          jpackage --type app-image --name Wasel-LAN --input target\installer-input --dest target\dist --main-jar wasel-java-0.4.0.jar --main-class com.wasel.WaselApplication --app-version 0.4.0 --vendor "Wasel" --description "Arabic offline LAN messaging" --icon src\main\resources\windows\wasel.ico
+          Compress-Archive -Path target\dist\Wasel-LAN\* -DestinationPath target\dist\Wasel-LAN-0.4.0-portable.zip -CompressionLevel Optimal
+      - name: Create per-user Windows installer
+        shell: pwsh
+        working-directory: java-app
+        run: |
+          jpackage --type exe --name Wasel-LAN --input target\installer-input --dest target\dist --main-jar wasel-java-0.4.0.jar --main-class com.wasel.WaselApplication --app-version 0.4.0 --vendor "Wasel" --description "Arabic offline LAN messaging" --icon src\main\resources\windows\wasel.ico --win-per-user-install --win-dir-chooser --win-menu --win-shortcut
+          if (-not (Test-Path target\dist\Wasel-LAN-0.4.0.exe)) { throw "Windows installer EXE was not produced." }
       - uses: actions/upload-artifact@v4
         with:
-          name: wasel-windows-installers
-          path: release/*
+          name: wasel-java-windows-0.4.0
+          path: |
+            java-app/target/dist/Wasel-LAN-0.4.0.exe
+            java-app/target/dist/Wasel-LAN-0.4.0-portable.zip
           if-no-files-found: error
+          retention-days: 30

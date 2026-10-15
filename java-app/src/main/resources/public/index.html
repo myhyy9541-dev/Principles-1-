@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="ar" dir="rtl"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>واصل</title><link rel="stylesheet" href="style.css"></head>
+<body><div class="app-shell">
+  <aside class="sidebar"><div class="brand"><div class="brand-mark">و</div><div><b>واصل</b><small>تواصل المنشأة</small></div></div>
+    <div class="workspace"><span class="green-dot"></span><div><b id="roomTitle">شبكة المنشأة</b><small id="connectionText">جارٍ البحث عن غرفة محلية…</small></div></div>
+    <button id="createRoom" class="create-room">＋ إنشاء غرفة جديدة</button>
+    <div class="section-label">المحادثات</div><div id="chatList"><button class="room-item active" data-chat="general"><span class="hash">#</span><span>عام</span><span class="online-pill">محلي</span></button></div>
+    <button id="newGroupBtn" class="side-action">＋ إنشاء مجموعة</button><button id="broadcastBtn" class="side-action">↗ رسالة بث</button>
+    <div class="section-label member-heading">متصلون الآن <span id="memberCount">0</span></div><div id="members" class="members"></div>
+    <div class="side-foot"><span class="shield">◆</span> اتصال داخل الشبكة فقط</div>
+  </aside>
+  <main class="main"><header class="topbar"><div><h1 id="chatTitle">المحادثة العامة</h1><p><span class="green-dot"></span> رسائلك لا تغادر شبكة المنشأة</p></div><div class="top-actions"><button id="settingsBtn" class="icon-btn" title="إعدادات التطبيق">⚙ <span>الإعدادات</span></button><button id="searchBtn" class="icon-btn" title="بحث في السجل">⌕ <span>بحث</span></button><button id="exportBtn" class="icon-btn" title="تصدير السجل">⇩ <span>تصدير</span></button><button id="voiceBtn" class="icon-btn" title="بدء اتصال صوتي">☎ <span>صوت</span></button><button id="videoBtn" class="icon-btn primary" title="بدء اتصال مرئي">▣ <span>فيديو</span></button></div></header>
+    <div id="searchBar" class="search-bar hidden"><input id="searchInput" placeholder="ابحث في الرسائل…"><span id="searchCount"></span><button id="clearSearch" class="call-control">مسح</button></div>
+    <div id="chatToolbar" class="chat-toolbar"><label for="chatSelect">إرسال إلى</label><select id="chatSelect"><option value="general">المحادثة العامة</option></select><button id="broadcastHere" class="call-control">بث للجميع</button></div>
+    <div id="roomBanner" class="banner hidden"><b>مضيف الغرفة جاهز</b><span id="hostAddress"></span></div>
+    <section id="messages" class="messages"><div class="welcome"><div class="welcome-icon">✦</div><h2>مرحباً بك في واصل</h2><p>تواصل وشارك الملفات مع فريقك على الشبكة المحلية، حتى دون اتصال بالإنترنت.</p><div class="features"><span>● دردشة فورية</span><span>● مشاركة الملفات</span><span>● صوت وفيديو</span></div></div></section>
+    <div id="callPanel" class="call-panel hidden"><div class="call-head"><b id="callTitle">اتصال مباشر</b><span id="callStatus">جارٍ الاتصال…</span><button id="muteBtn" class="call-control">كتم الصوت</button><button id="cameraBtn" class="call-control hidden">إيقاف الكاميرا</button><button id="endCall" class="end-call">إنهاء الاتصال</button></div><div id="videoGrid" class="video-grid"></div><div id="audioNodes" class="audio-nodes"></div></div>
+    <div class="composer-wrap"><div id="filePreview" class="file-preview hidden"></div><div id="transferList" class="transfer-list"></div><div class="composer"><button id="attachBtn" class="attach" title="إرفاق ملفات">＋</button><button id="folderBtn" class="attach" title="إرسال مجلد">▱</button><input type="file" id="fileInput" multiple hidden><input type="file" id="folderInput" webkitdirectory directory multiple hidden><textarea id="messageInput" rows="1" placeholder="اكتب رسالة…"></textarea><button id="sendBtn" class="send" title="إرسال">➤</button></div><div class="hint">Enter للإرسال · Shift+Enter لسطر جديد · حد الملف 10 م.ب للملف</div></div>
+  </main>
+</div>
+<dialog id="settingsDialog" class="settings-dialog" aria-labelledby="settingsTitle"><form method="dialog" id="settingsForm"><div class="settings-header"><div><h2 id="settingsTitle">إعدادات واصل</h2><p>تُحفظ على هذا الجهاز ولا تحتاج إلى الإنترنت.</p></div><button type="button" id="closeSettingsBtn" class="dialog-close" aria-label="إغلاق">×</button></div>
+  <div class="settings-grid"><label>الاسم الظاهر للفريق<input id="displayNameInput" maxlength="40" autocomplete="nickname" placeholder="اكتب اسمك"></label>
+    <label>بطاقة الشبكة<select id="networkInterfaceSelect"><option value="auto">تلقائي — جميع البطاقات</option></select></label>
+    <div class="network-summary"><b>عنوان هذا الجهاز</b><span id="networkInfoText">جارٍ قراءة بطاقات الشبكة…</span><button type="button" id="copyLocalIpBtn" class="call-control">نسخ عنوان IP</button></div>
+    <label>تردد إعلان وجود الغرفة<select id="discoveryIntervalSelect"><option value="500">كل 0.5 ثانية</option><option value="1000">كل ثانية</option><option value="1800">كل 1.8 ثانية (افتراضي)</option><option value="3000">كل 3 ثوانٍ</option><option value="5000">كل 5 ثوانٍ</option><option value="10000">كل 10 ثوانٍ</option><option value="15000">كل 15 ثانية</option></select><small>التردد الأقل يكتشف المضيف أسرع، لكنه يزيد حركة الشبكة قليلاً.</small></label>
+    <label>المظهر<select id="themeSelect"><option value="light">فاتح</option><option value="dark">داكن</option><option value="system">حسب Windows</option></select></label>
+    <label class="check-option"><input id="autoConnectCheck" type="checkbox"> الاتصال تلقائياً بالمضيف المكتشف</label>
+    <label class="check-option"><input id="openAtLoginCheck" type="checkbox"> تشغيل واصل عند تسجيل الدخول إلى Windows</label>
+  </div>
+  <div class="manual-connect"><b>اتصال يدوي عند الحاجة</b><div><input id="manualHostInput" inputmode="decimal" placeholder="عنوان IP للمضيف"><button type="button" id="connectHostBtn" class="call-control">اتصال</button></div><p id="detectedRoomText">سيظهر المضيف المكتشف هنا عند تعطيل الاتصال التلقائي.</p><button type="button" id="connectDetectedBtn" class="call-control" disabled>اتصال بالمضيف المكتشف</button></div>
+  <div class="settings-actions"><span id="settingsVersion"></span><button type="button" id="saveSettingsBtn" class="icon-btn primary">حفظ الإعدادات</button></div>
+</form></dialog>
+<div id="toast" class="toast hidden"></div><script src="socket.io.js"></script><script src="wasel-bridge.js"></script><script src="renderer.js"></script></body></html>
