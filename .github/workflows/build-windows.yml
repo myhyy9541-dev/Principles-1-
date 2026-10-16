@@ -14,8 +14,8 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: "21"
@@ -58,7 +58,7 @@ jobs:
         run: |
           jpackage --type exe --name Wasel-LAN --input target\installer-input --dest target\dist --main-jar wasel-java-0.4.0.jar --main-class com.wasel.WaselApplication --app-version 0.4.0 --vendor "Wasel" --description "Arabic offline LAN messaging" --icon src\main\resources\windows\wasel.ico --win-per-user-install --win-dir-chooser --win-menu --win-shortcut
           if (-not (Test-Path target\dist\Wasel-LAN-0.4.0.exe)) { throw "Windows installer EXE was not produced." }
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: wasel-java-windows-0.4.0
           path: |
