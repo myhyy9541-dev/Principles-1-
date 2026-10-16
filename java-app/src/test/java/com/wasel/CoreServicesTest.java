@@ -10,9 +10,14 @@ import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.slf4j.LoggerFactory;
 
 class CoreServicesTest {
     @TempDir Path temp;
+
+    @Test void slf4jProviderIsInstalled() {
+        assertEquals("org.slf4j.simple.SimpleLoggerFactory", LoggerFactory.getILoggerFactory().getClass().getName());
+    }
 
     @Test void broadcastAddressUsesSubnetMask() {
         assertEquals("192.168.4.255", SettingsStore.broadcastAddress("192.168.4.27", "255.255.255.0"));

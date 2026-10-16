@@ -3,7 +3,7 @@
   <modelVersion>4.0.0</modelVersion>
   <groupId>com.wasel</groupId>
   <artifactId>wasel-java</artifactId>
-  <version>0.4.0</version>
+  <version>0.4.1</version>
   <name>Wasel LAN Java</name>
   <properties>
     <maven.compiler.release>21</maven.compiler.release>
@@ -11,6 +11,7 @@
     <jcef.version>152.0.6</jcef.version>
     <jcef.natives.version>jcef-17e805a+cef-152.0.6+g708dc14+chromium-152.0.7977.83</jcef.natives.version>
     <socketio.version>2.0.13</socketio.version>
+    <slf4j.version>2.0.16</slf4j.version>
   </properties>
   <build>
     <extensions>
@@ -38,6 +39,7 @@
     <dependency><groupId>com.corundumstudio.socketio</groupId><artifactId>netty-socketio</artifactId><version>${socketio.version}</version></dependency>
     <dependency><groupId>me.friwi</groupId><artifactId>jcefmaven</artifactId><version>${jcef.version}</version></dependency>
     <dependency><groupId>com.google.code.gson</groupId><artifactId>gson</artifactId><version>2.11.0</version></dependency>
+    <dependency><groupId>org.slf4j</groupId><artifactId>slf4j-simple</artifactId><version>${slf4j.version}</version></dependency>
     <dependency><groupId>org.junit.jupiter</groupId><artifactId>junit-jupiter</artifactId><version>5.11.4</version><scope>test</scope></dependency>
   </dependencies>
   <profiles>
