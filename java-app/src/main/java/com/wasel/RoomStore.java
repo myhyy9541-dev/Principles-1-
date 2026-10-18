@@ -18,8 +18,9 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 public final class RoomStore {
-    public static final long MAX_FILE_BYTES = 10L * 1024 * 1024;
-    public static final long MAX_STORAGE_BYTES = 1024L * 1024 * 1024;
+    public static final long MAX_FILE_BYTES = 1024L * 1024 * 1024;
+    public static final long MAX_STORAGE_BYTES = 10L * 1024 * 1024 * 1024;
+    public static final int MAX_CHUNK_BYTES = 1024 * 1024;
     public static final int MAX_HISTORY = 5000;
     private static final Gson GSON = new GsonBuilder().disableHtmlEscaping().create();
     private final Path root, filesDir, historyPath, groupsPath, contactsPath;
@@ -120,7 +121,7 @@ public final class RoomStore {
         String transferId = string(input, "transferId", "");
         if (!transferId.matches("(?i)[0-9a-f-]{36}")) throw new IllegalArgumentException("معرف النقل غير صالح.");
         long size = input.has("size") ? input.get("size").getAsLong() : -1;
-        if (size < 1 || size > MAX_FILE_BYTES) throw new IllegalArgumentException("حجم الملف يجب ألا يتجاوز 10 ميغابايت.");
+        if (size < 1 || size > MAX_FILE_BYTES) throw new IllegalArgumentException("حجم الملف يجب ألا يتجاوز 1 غيغابايت.");
         Path part = filesDir.resolve(transferId + ".part");
         JsonObject old = uploads.get(transferId);
         if (old != null && !senderClientId.equals(string(old, "senderClientId", ""))) throw new IllegalArgumentException("معرف النقل مستخدم من عميل آخر.");
@@ -134,9 +135,9 @@ public final class RoomStore {
         if (!senderClientId.equals(string(meta, "senderClientId", ""))) throw new IllegalArgumentException("لا تملك صلاحية تعديل النقل.");
         byte[] bytes; try { bytes = Base64.getDecoder().decode(base64); } catch (Exception ex) { throw new IllegalArgumentException("مقطع الملف غير صالح."); }
         long current = meta.get("offset").getAsLong(), size = meta.get("size").getAsLong();
-        if (bytes.length < 1 || bytes.length > 128 * 1024 || offset != current || current + bytes.length > size) throw new IllegalArgumentException("ترتيب مقاطع الملف غير صحيح.");
+        if (bytes.length < 1 || bytes.length > MAX_CHUNK_BYTES || offset != current || current + bytes.length > size) throw new IllegalArgumentException("ترتيب مقاطع الملف غير صحيح.");
         try (var channel = java.nio.channels.FileChannel.open(filesDir.resolve(transferId + ".part"), java.nio.file.StandardOpenOption.WRITE)) {
-            channel.position(current); channel.write(java.nio.ByteBuffer.wrap(bytes)); channel.force(false);
+            channel.position(current); var buffer = java.nio.ByteBuffer.wrap(bytes); while (buffer.hasRemaining()) channel.write(buffer);
         }
         meta.addProperty("offset", current + bytes.length); return current + bytes.length;
     }
@@ -144,8 +145,10 @@ public final class RoomStore {
         JsonObject meta = uploads.get(transferId);
         if (meta == null || meta.get("offset").getAsLong() != meta.get("size").getAsLong()) throw new IllegalArgumentException("لم يكتمل رفع الملف بعد.");
         if (!senderClientId.equals(string(meta, "senderClientId", ""))) throw new IllegalArgumentException("لا تملك صلاحية إكمال النقل.");
-        long size = meta.get("size").getAsLong(); if (storedBytes + size > MAX_STORAGE_BYTES) throw new IllegalArgumentException("امتلأت مساحة الملفات على المضيف.");
-        String id = UUID.randomUUID().toString(); Path file = filesDir.resolve(id); Files.move(filesDir.resolve(transferId + ".part"), file, StandardCopyOption.REPLACE_EXISTING);
+        long size = meta.get("size").getAsLong(); if (storedBytes + size > MAX_STORAGE_BYTES) throw new IllegalArgumentException("امتلأت مساحة الملفات المحددة (10 غيغابايت) على هذا الجهاز.");
+        Path part = filesDir.resolve(transferId + ".part");
+        try (var channel = java.nio.channels.FileChannel.open(part, java.nio.file.StandardOpenOption.WRITE)) { channel.force(true); }
+        String id = UUID.randomUUID().toString(); Path file = filesDir.resolve(id); Files.move(part, file, StandardCopyOption.REPLACE_EXISTING);
         JsonObject record = new JsonObject(); record.addProperty("id", id); record.addProperty("type", "file"); record.addProperty("name", string(meta, "name", "ملف"));
         record.addProperty("mime", string(meta, "mime", "application/octet-stream")); record.addProperty("size", size); record.addProperty("user", string(meta, "user", "مستخدم"));
         record.addProperty("senderId", string(meta, "senderId", "")); record.addProperty("senderClientId", senderClientId); record.addProperty("channel", string(meta, "channel", "general"));

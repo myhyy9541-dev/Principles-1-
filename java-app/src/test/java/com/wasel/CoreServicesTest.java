@@ -64,6 +64,26 @@ class CoreServicesTest {
         assertEquals(1, store.historyFor(member).size()); assertEquals(0, store.historyFor(other).size());
     }
 
+    @Test void largeUploadChunkAndOneGigabyteFileLimitAreAccepted() throws Exception {
+        RoomStore store = new RoomStore(temp.resolve("large-room"));
+        assertEquals(1024L * 1024 * 1024, RoomStore.MAX_FILE_BYTES);
+        assertEquals(10L * 1024 * 1024 * 1024, RoomStore.MAX_STORAGE_BYTES);
+        String sender = "client_large_sender_00001";
+        byte[] bytes = new byte[RoomStore.MAX_CHUNK_BYTES];
+        for (int i = 0; i < bytes.length; i++) bytes[i] = (byte) (i % 251);
+        String transfer = UUID.randomUUID().toString();
+        JsonObject meta = new JsonObject(); meta.addProperty("transferId", transfer); meta.addProperty("name", "large-chunk.bin"); meta.addProperty("mime", "application/octet-stream"); meta.addProperty("size", bytes.length); meta.addProperty("channel", "general");
+        assertEquals(0, store.beginUpload(meta, "large-socket", sender));
+        assertEquals(bytes.length, store.appendChunk(transfer, 0, Base64.getEncoder().encodeToString(bytes), sender));
+        JsonObject file = store.completeUpload(transfer, sender);
+        assertEquals(bytes.length, java.nio.file.Files.size(store.filePath(file.get("id").getAsString())));
+
+        String maximumTransfer = UUID.randomUUID().toString();
+        JsonObject maximum = new JsonObject(); maximum.addProperty("transferId", maximumTransfer); maximum.addProperty("name", "large-file.bin"); maximum.addProperty("size", RoomStore.MAX_FILE_BYTES);
+        assertEquals(0, store.beginUpload(maximum, "large-socket", sender));
+        store.cancelUpload(maximumTransfer, sender);
+    }
+
     @Test void oldMessagesWithoutChannelAreMigratedToGeneral() throws Exception {
         Path root = temp.resolve("room"); java.nio.file.Files.createDirectories(root);
         java.nio.file.Files.writeString(root.resolve("history.json"), "[{\"id\":\"old\",\"type\":\"text\",\"text\":\"قديم\"}]");

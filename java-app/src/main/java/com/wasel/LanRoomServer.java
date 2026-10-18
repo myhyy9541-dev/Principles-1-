@@ -154,7 +154,7 @@ public final class LanRoomServer implements AutoCloseable {
     }
 
     private void uploadChunk(SocketIOClient client, JsonObject raw, com.corundumstudio.socketio.AckRequest ack) {
-        JsonObject user = peers.get(client.getSessionId()); if (user == null || !withinRate(client, "upload-chunk", 1200)) { acknowledge(ack, false, "الرفع سريع جداً أو لم تنضم إلى الغرفة."); return; }
+        JsonObject user = peers.get(client.getSessionId()); if (user == null || !withinRate(client, "upload-chunk", 12000)) { acknowledge(ack, false, "الرفع سريع جداً أو لم تنضم إلى الغرفة."); return; }
         try { long offset = store.appendChunk(text(raw, "transferId", ""), raw.get("offset").getAsLong(), text(raw, "data", ""), text(user, "clientId", "")); acknowledge(ack, true, "", "offset", offset); }
         catch (Exception ex) { acknowledge(ack, false, ex.getMessage()); }
     }

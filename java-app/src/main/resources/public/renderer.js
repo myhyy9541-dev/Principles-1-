@@ -1,5 +1,6 @@
 const $ = id => document.getElementById(id);
 const escapeHtml = value => String(value).replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
+const MAX_FILE_BYTES = 1024 * 1024 * 1024, UPLOAD_CHUNK_BYTES = 1024 * 1024;
 let myName = localStorage.getItem('wasel-name') || 'مستخدم';
 let clientId = localStorage.getItem('wasel-client-id');
 if (!clientId) { clientId = `w${crypto.randomUUID().replaceAll('-', '')}`; localStorage.setItem('wasel-client-id', clientId); }
@@ -83,6 +84,7 @@ function renderMessages() {
   if (connected) for (const message of list) if (message.senderClientId !== clientId && message.channel !== 'general' && !(message.readBy || []).includes(clientId) && !readSent.has(message.id)) { readSent.add(message.id); (messageSockets.get(message.id) || socket)?.emit('mark-read', { id: message.id }); }
 }
 function formatSize(bytes = 0) {
+  if (bytes >= 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} غ.ب`;
   return bytes < 1024 * 1024 ? `${Math.max(1, Math.round(bytes / 1024))} ك.ب` : `${(bytes / 1024 / 1024).toFixed(1)} م.ب`;
 }
 function renderMembers(members) {
@@ -355,7 +357,7 @@ function queueFiles(files, folder = false) {
   if (connectionMode === 'direct' && !currentChat.startsWith('user:')) return toast('في وضع P2P اختر محادثة شخص محدد قبل إرسال ملف أو صورة.');
   for (const file of files) {
     if (!file.size) { toast(`تم تجاهل الملف الفارغ: ${file.name}`); continue; }
-    if (file.size > 10 * 1024 * 1024) { toast(`تم تجاهل الملف الكبير: ${file.name}`); continue; }
+    if (file.size > MAX_FILE_BYTES) { toast(`تم تجاهل الملف؛ الحد الأقصى 1 غيغابايت: ${file.name}`); continue; }
     const name = folder && file.webkitRelativePath ? file.webkitRelativePath : file.name;
     const job = { id: crypto.randomUUID(), file, name, target: selectedTarget(), offset: 0, paused: false, canceled: false, state: 'بالانتظار' };
     transfers.set(job.id, job); renderTransfers(); runUpload(job);
@@ -379,9 +381,14 @@ function uploadSocket(job) {
 function socketAck(event, payload, transport = socket) {
   return new Promise((resolve, reject) => {
     if (!transport?.connected) return reject(new Error('انقطع الاتصال'));
-    const timer = setTimeout(() => reject(new Error('انتهت مهلة الرفع')), 12000);
+    const timer = setTimeout(() => reject(new Error('انتهت مهلة الرفع')), 30000);
     transport.emit(event, payload, response => { clearTimeout(timer); if (response?.ok) resolve(response); else reject(new Error(response?.error || 'تعذر إكمال النقل')); });
   });
+}
+function encodeBase64(bytes) {
+  let binary = '';
+  for (let start = 0; start < bytes.length; start += 16 * 1024) binary += String.fromCharCode(...bytes.subarray(start, Math.min(start + 16 * 1024, bytes.length)));
+  return btoa(binary);
 }
 async function waitConnected(job) {
   while (!job.canceled && !uploadSocket(job)?.connected) {
@@ -414,10 +421,9 @@ async function runUpload(job) {
       const init = await socketAck('upload-init', { transferId: job.id, name: job.name, mime: job.file.type, size: job.file.size, ...job.target }, transport);
       job.offset = init.offset;
       while (!job.canceled && !job.paused && job.offset < job.file.size) {
-        const end = Math.min(job.offset + 48 * 1024, job.file.size);
+        const end = Math.min(job.offset + UPLOAD_CHUNK_BYTES, job.file.size);
         const bytes = new Uint8Array(await job.file.slice(job.offset, end).arrayBuffer());
-        let binary = ''; for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-        const response = await socketAck('upload-chunk', { transferId: job.id, offset: job.offset, data: btoa(binary) }, transport);
+        const response = await socketAck('upload-chunk', { transferId: job.id, offset: job.offset, data: encodeBase64(bytes) }, transport);
         job.offset = response.offset; renderTransfers();
       }
     }
