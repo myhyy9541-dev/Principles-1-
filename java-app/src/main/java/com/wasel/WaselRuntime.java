@@ -34,6 +34,7 @@ public final class WaselRuntime implements AutoCloseable {
     private HttpServer uiServer;
     private FileServer fileServer;
     private LanRoomServer roomServer;
+    private LanRoomServer peerServer;
 
     public WaselRuntime() throws IOException {
         dataRoot = resolveDataRoot(); settingsPath = dataRoot.resolve("settings.json"); Files.createDirectories(dataRoot);
@@ -41,11 +42,13 @@ public final class WaselRuntime implements AutoCloseable {
         settings = SettingsStore.load(settingsPath, SettingsStore.adapters());
         store = new RoomStore(dataRoot.resolve("wasel-room"));
         try { AutoStart.sync(settings.openAtLogin); } catch (Exception ex) { queueNotice("تعذر تطبيق بدء Windows التلقائي: " + ex.getMessage()); }
-        discovery = new LanDiscovery(InetAddress.getLocalHost().getHostName(), settings, this::onRoomFound);
+        discovery = new LanDiscovery(InetAddress.getLocalHost().getHostName(), settings, this::onRoomFound, this::onPeerFound);
         uiServer = HttpServer.create(new InetSocketAddress(InetAddress.getByName("127.0.0.1"), UI_PORT), 16);
         uiServer.createContext("/api/lan-info", this::handleLanInfo);
         uiServer.createContext("/api/settings", this::handleSettings);
         uiServer.createContext("/api/start-room", this::handleStartRoom);
+        uiServer.createContext("/api/start-peer", this::handleStartPeer);
+        uiServer.createContext("/api/stop-peer", this::handleStopPeer);
         uiServer.createContext("/api/events", this::handleEvents);
         uiServer.createContext("/", this::handleStatic);
         uiServer.setExecutor(Executors.newFixedThreadPool(4, r -> { Thread t = new Thread(r, "wasel-local-http"); t.setDaemon(true); return t; }));
@@ -88,6 +91,7 @@ public final class WaselRuntime implements AutoCloseable {
     }
 
     private void onRoomFound(JsonObject room) { if (events.size() < 256) event("room-found", room); }
+    private void onPeerFound(JsonObject peer) { if (events.size() < 256) event("peer-found", peer); }
     private void event(String type, Object data) { JsonObject item = new JsonObject(); item.addProperty("type", type); item.add("data", GSON.toJsonTree(data)); if (events.size() > 256) events.poll(); events.offer(item); }
     private void queueNotice(String text) { event("notice", text); }
 
@@ -97,7 +101,7 @@ public final class WaselRuntime implements AutoCloseable {
         JsonArray addresses = new JsonArray();
         SettingsStore.Adapter selected = SettingsStore.adapters().stream().filter(a -> a.id.equals(settings.networkInterface)).findFirst().orElse(null);
         if (selected != null) addresses.add(selected.address); else SettingsStore.adapters().forEach(a -> { if (!addresses.contains(GSON.toJsonTree(a.address))) addresses.add(a.address); });
-        out.add("addresses", addresses); out.addProperty("port", LanDiscovery.SOCKET_PORT); out.addProperty("filePort", LanDiscovery.FILE_PORT); json(exchange,200,out);
+        out.add("addresses", addresses); out.addProperty("port", LanDiscovery.SOCKET_PORT); out.addProperty("filePort", LanDiscovery.FILE_PORT); out.addProperty("peerPort", LanDiscovery.PEER_PORT); json(exchange,200,out);
     }
 
     private void handleSettings(HttpExchange exchange) throws IOException {
@@ -116,16 +120,49 @@ public final class WaselRuntime implements AutoCloseable {
 
     private JsonObject settingsView() {
         JsonObject out=new JsonObject(); out.add("settings",SettingsStore.toJson(settings)); out.add("adapters",GSON.toJsonTree(SettingsStore.adapters()));
-        out.addProperty("hostname",safeHost()); out.addProperty("appVersion","0.4.0"); out.addProperty("platform",System.getProperty("os.name")); return out;
+        out.addProperty("hostname",safeHost()); out.addProperty("appVersion","0.5.0"); out.addProperty("platform",System.getProperty("os.name")); return out;
+    }
+
+    private synchronized void handleStartPeer(HttpExchange exchange) throws IOException {
+        if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) { reply(exchange,405,"الطلب غير مدعوم."); return; }
+        LanRoomServer nextPeer = null; FileServer nextFiles = null; boolean createdFiles = false;
+        try {
+            JsonObject request = JsonParser.parseString(new String(exchange.getRequestBody().readNBytes(64 * 1024),StandardCharsets.UTF_8)).getAsJsonObject();
+            String clientId = request.has("clientId") ? request.get("clientId").getAsString() : "";
+            String name = request.has("name") ? request.get("name").getAsString().replaceAll("[\\r\\n\\u0000]"," ").strip() : "";
+            if (!clientId.matches("[A-Za-z0-9_-]{16,80}")) throw new IllegalArgumentException("هوية الجهاز غير صالحة؛ أعد تشغيل التطبيق.");
+            if (name.isBlank()) throw new IllegalArgumentException("اكتب الاسم الظاهر في الإعدادات قبل بدء الاتصال المباشر.");
+            name = name.substring(0,Math.min(40,name.length()));
+            if (peerServer == null) {
+                nextPeer = new LanRoomServer(store,this::queueNotice,LanDiscovery.PEER_PORT);
+                if (fileServer == null) { nextFiles = new FileServer(store); nextFiles.start(); createdFiles = true; }
+                nextPeer.start(); peerServer = nextPeer;
+                if (createdFiles) fileServer = nextFiles;
+            }
+            discovery.setPeerProfile(clientId,name,true);
+            JsonObject result = new JsonObject(); result.addProperty("ok",true); result.addProperty("peerPort",LanDiscovery.PEER_PORT); result.addProperty("filePort",LanDiscovery.FILE_PORT); json(exchange,200,result);
+        } catch (Exception ex) {
+            if (nextPeer != null && peerServer != nextPeer) nextPeer.close();
+            if (createdFiles && nextFiles != null && peerServer == null) nextFiles.close();
+            json(exchange,200,error(ex.getMessage()==null?"تعذر بدء الاتصال المباشر.":ex.getMessage()));
+        }
+    }
+
+    private synchronized void handleStopPeer(HttpExchange exchange) throws IOException {
+        if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) { reply(exchange,405,"الطلب غير مدعوم."); return; }
+        discovery.setPeerProfile("","",false);
+        if (peerServer != null) { peerServer.close(); peerServer = null; }
+        if (roomServer == null && fileServer != null) { fileServer.close(); fileServer = null; }
+        JsonObject result = new JsonObject(); result.addProperty("ok",true); json(exchange,200,result);
     }
 
     private synchronized void handleStartRoom(HttpExchange exchange) throws IOException {
         if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) { reply(exchange,405,"الطلب غير مدعوم."); return; }
         try {
-            if (roomServer == null) {
-                LanRoomServer socket = new LanRoomServer(store,this::queueNotice); FileServer files = new FileServer(store);
-                try { socket.start(); files.start(); roomServer=socket; fileServer=files; discovery.setHosting(true); }
-                catch(Exception ex) { socket.close(); files.close(); throw ex; }
+        if (roomServer == null) {
+                LanRoomServer socket = new LanRoomServer(store,this::queueNotice,LanDiscovery.SOCKET_PORT); FileServer files = fileServer; boolean createdFiles = false;
+                try { socket.start(); if (files == null) { files = new FileServer(store); files.start(); createdFiles = true; } roomServer=socket; if (createdFiles) fileServer=files; discovery.setHosting(true); }
+                catch(Exception ex) { socket.close(); if (createdFiles && files != null) files.close(); throw ex; }
                 JsonObject started=new JsonObject(); started.add("addresses",lanInfoAddresses()); started.addProperty("port",LanDiscovery.SOCKET_PORT); started.addProperty("filePort",LanDiscovery.FILE_PORT); event("room-started",started);
             }
             JsonObject result=new JsonObject(); result.addProperty("ok",true); result.addProperty("port",LanDiscovery.SOCKET_PORT); json(exchange,200,result);
@@ -157,5 +194,5 @@ public final class WaselRuntime implements AutoCloseable {
     private static void json(HttpExchange exchange,int status,JsonElement data)throws IOException{byte[] body=GSON.toJson(data).getBytes(StandardCharsets.UTF_8);exchange.getResponseHeaders().set("Content-Type","application/json; charset=utf-8");exchange.getResponseHeaders().set("X-Content-Type-Options","nosniff");exchange.getResponseHeaders().set("Cache-Control","no-store");exchange.sendResponseHeaders(status,body.length);try(var output=exchange.getResponseBody()){output.write(body);}}
     private static void reply(HttpExchange exchange,int status,String text)throws IOException{json(exchange,status,error(text));}
 
-    @Override public synchronized void close(){if(!closed.compareAndSet(false,true))return;discovery.setHosting(false);if(roomServer!=null)roomServer.close();if(fileServer!=null)fileServer.close();discovery.close();if(uiServer!=null)uiServer.stop(1);}
+    @Override public synchronized void close(){if(!closed.compareAndSet(false,true))return;discovery.setHosting(false);discovery.setPeerProfile("","",false);if(roomServer!=null)roomServer.close();if(peerServer!=null)peerServer.close();if(fileServer!=null)fileServer.close();discovery.close();if(uiServer!=null)uiServer.stop(1);}
 }

@@ -19,22 +19,28 @@ public final class LanDiscovery implements AutoCloseable {
     public static final int DISCOVERY_PORT = 43820;
     public static final int SOCKET_PORT = 43821;
     public static final int FILE_PORT = 43822;
+    public static final int PEER_PORT = 43823;
     public static final String PROTOCOL = "wasel-lan-java-v1";
+    public static final String PEER_PROTOCOL = "wasel-lan-p2p-v1";
     private static final Gson GSON = new Gson();
     private final Consumer<JsonObject> roomFound;
+    private final Consumer<JsonObject> peerFound;
     private final String hostname;
     private final AtomicBoolean closed = new AtomicBoolean();
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor(r -> { Thread t = new Thread(r, "wasel-discovery-sender"); t.setDaemon(true); return t; });
     private volatile SettingsStore.Settings settings;
     private volatile boolean hosting;
+    private volatile boolean peerEnabled;
+    private volatile String peerClientId = "";
+    private volatile String peerName = "";
     private volatile DatagramSocket socket;
     private volatile Thread listenerThread;
     private volatile ScheduledFuture<?> announcementTask;
     private volatile String broadcastAddress = "255.255.255.255";
     private volatile String bindAddress = "0.0.0.0";
 
-    public LanDiscovery(String hostname, SettingsStore.Settings initial, Consumer<JsonObject> roomFound) {
-        this.hostname = hostname; this.settings = initial; this.roomFound = roomFound;
+    public LanDiscovery(String hostname, SettingsStore.Settings initial, Consumer<JsonObject> roomFound, Consumer<JsonObject> peerFound) {
+        this.hostname = hostname; this.settings = initial; this.roomFound = roomFound; this.peerFound = peerFound;
         startSocket(); restartAnnouncements();
     }
 
@@ -42,6 +48,12 @@ public final class LanDiscovery implements AutoCloseable {
         this.settings = next; startSocket(); restartAnnouncements();
     }
     public void setHosting(boolean active) { hosting = active; if (active) sendAnnouncement(); }
+    public void setPeerProfile(String clientId, String name, boolean enabled) {
+        peerClientId = clientId == null ? "" : clientId;
+        peerName = name == null ? "" : name;
+        peerEnabled = enabled;
+        if (enabled) sendAnnouncement();
+    }
 
     private synchronized void startSocket() {
         if (closed.get()) return;
@@ -74,24 +86,45 @@ public final class LanDiscovery implements AutoCloseable {
             try {
                 DatagramPacket packet = new DatagramPacket(buffer, buffer.length); source.receive(packet);
                 JsonObject message = GSON.fromJson(new String(packet.getData(), packet.getOffset(), packet.getLength(), StandardCharsets.UTF_8), JsonObject.class);
-                if (message == null || !PROTOCOL.equals(text(message, "protocol", "")) || !message.has("port") || message.get("port").getAsInt() != SOCKET_PORT) continue;
+                if (message == null) continue;
+                String protocol = text(message, "protocol", "");
                 String address = packet.getAddress().getHostAddress();
-                if (hosting && SettingsStore.adapters().stream().anyMatch(a -> a.address.equals(address))) continue;
-                JsonObject room = new JsonObject(); room.addProperty("address", address); room.addProperty("port", SOCKET_PORT); room.addProperty("filePort", FILE_PORT);
-                room.addProperty("name", text(message, "name", "مضيف محلي")); room.addProperty("hostname", text(message, "hostname", ""));
-                roomFound.accept(room);
+                if (PROTOCOL.equals(protocol) && message.has("port") && message.get("port").getAsInt() == SOCKET_PORT) {
+                    if (hosting && SettingsStore.adapters().stream().anyMatch(a -> a.address.equals(address))) continue;
+                    JsonObject room = new JsonObject(); room.addProperty("address", address); room.addProperty("port", SOCKET_PORT); room.addProperty("filePort", FILE_PORT);
+                    room.addProperty("name", text(message, "name", "مضيف محلي")); room.addProperty("hostname", text(message, "hostname", ""));
+                    roomFound.accept(room);
+                } else if (PEER_PROTOCOL.equals(protocol) && message.has("peerPort") && message.get("peerPort").getAsInt() == PEER_PORT) {
+                    String remoteId = text(message, "clientId", "");
+                    if (remoteId.isBlank() || remoteId.equals(peerClientId) || SettingsStore.adapters().stream().anyMatch(a -> a.address.equals(address))) continue;
+                    JsonObject peer = new JsonObject(); peer.addProperty("address", address); peer.addProperty("port", PEER_PORT); peer.addProperty("filePort", FILE_PORT);
+                    peer.addProperty("clientId", remoteId); peer.addProperty("name", text(message, "name", "مستخدم")); peer.addProperty("hostname", text(message, "hostname", ""));
+                    peerFound.accept(peer);
+                }
             } catch (Exception ex) { if (!source.isClosed()) System.err.println("Wasel discovery receive: " + ex.getMessage()); }
         }
     }
 
     private void sendAnnouncement() {
         DatagramSocket active = socket;
-        if (closed.get() || !hosting || active == null || active.isClosed()) return;
-        JsonObject message = new JsonObject(); message.addProperty("protocol", PROTOCOL); message.addProperty("port", SOCKET_PORT);
-        message.addProperty("filePort", FILE_PORT); message.addProperty("name", hostname); message.addProperty("hostname", hostname);
+        if (closed.get() || active == null || active.isClosed()) return;
+        try {
+            if (hosting) {
+                JsonObject room = new JsonObject(); room.addProperty("protocol", PROTOCOL); room.addProperty("port", SOCKET_PORT);
+                room.addProperty("filePort", FILE_PORT); room.addProperty("name", hostname); room.addProperty("hostname", hostname);
+                send(active, room);
+            }
+            if (peerEnabled && peerClientId.matches("[A-Za-z0-9_-]{16,80}")) {
+                JsonObject peer = new JsonObject(); peer.addProperty("protocol", PEER_PROTOCOL); peer.addProperty("peerPort", PEER_PORT);
+                peer.addProperty("filePort", FILE_PORT); peer.addProperty("clientId", peerClientId); peer.addProperty("name", peerName.isBlank() ? hostname : peerName); peer.addProperty("hostname", hostname);
+                send(active, peer);
+            }
+        } catch (Exception ex) { System.err.println("Wasel discovery send: " + ex.getMessage()); }
+    }
+
+    private void send(DatagramSocket active, JsonObject message) throws Exception {
         byte[] data = GSON.toJson(message).getBytes(StandardCharsets.UTF_8);
-        try { active.send(new DatagramPacket(data, data.length, InetAddress.getByName(broadcastAddress), DISCOVERY_PORT)); }
-        catch (Exception ex) { System.err.println("Wasel discovery send: " + ex.getMessage()); }
+        active.send(new DatagramPacket(data, data.length, InetAddress.getByName(broadcastAddress), DISCOVERY_PORT));
     }
 
     public static String text(JsonObject object, String key, String fallback) {

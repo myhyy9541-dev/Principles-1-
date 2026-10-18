@@ -25,16 +25,18 @@ public final class LanRoomServer implements AutoCloseable {
     private static final int MAX_MESSAGE_CHARS = 5000;
     private final RoomStore store;
     private final Consumer<String> notice;
+    private final int port;
     private final Map<UUID, JsonObject> peers = new ConcurrentHashMap<>();
     private final Map<String, Deque<Long>> rates = new ConcurrentHashMap<>();
     private volatile SocketIOServer server;
     private volatile JsonObject activeCall;
 
-    public LanRoomServer(RoomStore store, Consumer<String> notice) { this.store = store; this.notice = notice; }
+    public LanRoomServer(RoomStore store, Consumer<String> notice) { this(store, notice, LanDiscovery.SOCKET_PORT); }
+    public LanRoomServer(RoomStore store, Consumer<String> notice, int port) { this.store = store; this.notice = notice; this.port = port; }
 
     public synchronized void start() {
         if (server != null) return;
-        Configuration config = new Configuration(); config.setHostname("0.0.0.0"); config.setPort(LanDiscovery.SOCKET_PORT);
+        Configuration config = new Configuration(); config.setHostname("0.0.0.0"); config.setPort(port);
         config.setMaxHttpContentLength(2 * 1024 * 1024); config.setMaxFramePayloadLength(2 * 1024 * 1024);
         config.setEnableCors(true); config.setOrigin("*"); config.setPingInterval(25000); config.setPingTimeout(60000);
         SocketIOServer next = new SocketIOServer(config);
@@ -179,13 +181,27 @@ public final class LanRoomServer implements AutoCloseable {
         JsonObject user = peers.get(client.getSessionId()); if (user == null || packet == null || !withinRate(client, "signal", 180)) return;
         JsonObject description = packet.has("description") && packet.get("description").isJsonObject() ? packet.getAsJsonObject("description") : null;
         if (description != null && "call-start".equals(text(description, "type", ""))) {
+            String targetClientId = text(packet, "targetClientId", "");
+            if (!targetClientId.isBlank()) {
+                SocketIOClient target = socketForClient(targetClientId);
+                if (target == null || target.getSessionId().equals(client.getSessionId())) { send(client, "notice", "المستخدم المحدد غير متصل حالياً."); return; }
+                JsonObject invitation = new JsonObject(); invitation.addProperty("from", client.getSessionId().toString()); invitation.add("description", obj("type", "call-start", "mode", text(description, "mode", "audio")));
+                send(target, "signal", invitation); return;
+            }
             JsonObject call = new JsonObject(); call.addProperty("owner", client.getSessionId().toString()); call.addProperty("mode", "video".equals(text(description, "mode", "")) ? "video" : "audio"); activeCall = call;
             JsonObject notice = new JsonObject(); notice.addProperty("from", client.getSessionId().toString()); notice.add("description", obj("type", "call-start", "mode", text(call, "mode", "audio"))); broadcastExcept(client, "signal", notice);
         } else if (description != null && "call-end".equals(text(description, "type", ""))) {
+            String to = text(packet, "to", "");
+            if (!to.isBlank()) { forwardSignal(client, packet, description); return; }
             activeCall = null; JsonObject notice = new JsonObject(); notice.addProperty("from", client.getSessionId().toString()); notice.add("description", obj("type", "call-end")); broadcastExcept(client, "signal", notice);
         } else {
-            String to = text(packet, "to", ""); try { SocketIOClient target = server.getClient(UUID.fromString(to)); if (target != null) { JsonObject forwarded = new JsonObject(); forwarded.addProperty("from", client.getSessionId().toString()); if (description != null) forwarded.add("description", description); if (packet.has("candidate")) forwarded.add("candidate", packet.get("candidate")); send(target, "signal", forwarded); } } catch (IllegalArgumentException ignored) { }
+            forwardSignal(client, packet, description);
         }
+    }
+
+    private void forwardSignal(SocketIOClient client, JsonObject packet, JsonObject description) {
+        String to = text(packet, "to", "");
+        try { SocketIOClient target = server.getClient(UUID.fromString(to)); if (target != null) { JsonObject forwarded = new JsonObject(); forwarded.addProperty("from", client.getSessionId().toString()); if (description != null) forwarded.add("description", description); if (packet.has("candidate")) forwarded.add("candidate", packet.get("candidate")); send(target, "signal", forwarded); } } catch (IllegalArgumentException ignored) { }
     }
 
     private void onDisconnect(SocketIOClient client) {
