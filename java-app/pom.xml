@@ -3,7 +3,7 @@
   <modelVersion>4.0.0</modelVersion>
   <groupId>com.wasel</groupId>
   <artifactId>wasel-java</artifactId>
-  <version>0.5.1</version>
+  <version>0.5.2</version>
   <name>Wasel LAN Java</name>
   <properties>
     <maven.compiler.release>21</maven.compiler.release>

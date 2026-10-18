@@ -213,7 +213,11 @@ function bindPeerSocket(peerSocket, peer = null, local = false) {
       if (local) { handleEvent(event, data, peerSocket); return; }
       if (event === 'members') {
         const ownMember = (data || []).find(member => member.clientId === peer.clientId);
-        if (ownMember) peer.remoteSessionId = ownMember.id;
+        if (ownMember) {
+          peer.remoteSessionId = ownMember.id;
+          const connection = peerSockets.get(peer.clientId);
+          if (connection?.socket === peerSocket) connection.remoteSessionId = ownMember.id;
+        }
         refreshPeerMembers();
       } else if (['history', 'chat-message', 'file-message', 'message-receipt', 'signal', 'notice'].includes(event)) {
         handleEvent(event, data, peerSocket);

@@ -120,7 +120,7 @@ public final class WaselRuntime implements AutoCloseable {
 
     private JsonObject settingsView() {
         JsonObject out=new JsonObject(); out.add("settings",SettingsStore.toJson(settings)); out.add("adapters",GSON.toJsonTree(SettingsStore.adapters()));
-        out.addProperty("hostname",safeHost()); out.addProperty("appVersion","0.5.1"); out.addProperty("platform",System.getProperty("os.name")); return out;
+        out.addProperty("hostname",safeHost()); out.addProperty("appVersion","0.5.2"); out.addProperty("platform",System.getProperty("os.name")); return out;
     }
 
     private synchronized void handleStartPeer(HttpExchange exchange) throws IOException {
