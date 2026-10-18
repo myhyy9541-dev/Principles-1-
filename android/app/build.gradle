@@ -21,7 +21,7 @@ android {
     }
 
     sourceSets {
-        main.assets.srcDir(layout.buildDirectory.dir('generated/fursanWebAssets'))
+        main.assets.srcDir(layout.buildDirectory.dir('generated/fursanWebAssets').get().asFile)
     }
 }
 
