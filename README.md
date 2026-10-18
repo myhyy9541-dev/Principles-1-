@@ -56,7 +56,7 @@ npm run build:win
 npm run build:portable
 ```
 
-ينشئ `npm run build:win` مثبت NSIS باسم `Fursan-Lan-Setup-0.4.1-x64.exe`، وينشئ `npm run build:portable` نسخة محمولة باسم `Fursan-Lan-Portable-0.4.1-x64.exe` في `release/`. كما يمكن تنزيل artifact من سير عمل **Build Windows installer** في GitHub Actions.
+ينشئ `npm run build:win` مثبت NSIS باسم `Fursan-Lan-Setup-0.4.1-x64.exe`، وينشئ `npm run build:portable` نسخة محمولة باسم `Fursan-Lan-Portable-0.4.1-x64.exe` في `release/`. يرفع سير عمل **Build Windows installer** في GitHub Actions المثبّت والنسخة المحمولة كـartifactين منفصلين.
 
 ## الحدود والأمان
 
