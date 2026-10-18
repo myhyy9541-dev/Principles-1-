@@ -41,7 +41,7 @@ class RoomStore {
     return message;
   }
   rememberContact(contact) {
-    const clean = { clientId: contact.clientId, name: String(contact.name || 'مستخدم').slice(0, 40), lastSeen: Date.now() };
+    const clean = { clientId: contact.clientId, name: String(contact.name || 'مستخدم').slice(0, 40), platform: contact.platform === 'android' ? 'android' : 'windows', lastSeen: Date.now() };
     const index = this.contacts.findIndex(item => item.clientId === clean.clientId);
     if (index >= 0) this.contacts[index] = { ...this.contacts[index], ...clean };
     else this.contacts.push(clean);
@@ -151,7 +151,7 @@ class RoomStore {
     const id = crypto.randomUUID();
     fs.renameSync(filePath, path.join(this.filesDir, id));
     const mime = SAFE_MIME.test(String(meta.mime || '')) ? String(meta.mime) : 'application/octet-stream';
-    const record = { id, name: meta.name, mime, size: meta.size, user: meta.user, senderId: meta.senderId, senderClientId: meta.senderClientId, channel: meta.channel, toId: meta.toId, groupId: meta.groupId, time: Date.now(), diskName: id };
+    const record = { id, name: meta.name, mime, size: meta.size, user: meta.user, senderId: meta.senderId, senderClientId: meta.senderClientId, channel: meta.channel, toId: meta.toId, groupId: meta.groupId, recipientIds: meta.recipientIds, time: Date.now(), diskName: id };
     try { this.addMessage({ ...record, type: 'file', deliveredTo: [], readBy: [] }); }
     catch (error) { fs.renameSync(path.join(this.filesDir, id), filePath); throw error; }
     this.uploads.delete(transferId); this.storedBytes += meta.size;

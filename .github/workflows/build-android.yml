@@ -1,0 +1,74 @@
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - feat/fursan-lan-p2p
+    paths:
+      - 'android/**'
+      - 'src/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/build-android.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build-android:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install shared web client dependencies
+        run: npm ci
+
+      - name: Set up latest Java for Android build
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '26'
+          cache: gradle
+          cache-dependency-path: android/gradle/wrapper/gradle-wrapper.properties
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK platforms
+        run: |
+          yes | sdkmanager --licenses >/dev/null
+          sdkmanager "platforms;android-37" "build-tools;36.0.0" "platform-tools"
+
+      - name: Verify build toolchain
+        run: |
+          java -version
+          cd android
+          ./gradlew --version
+
+      - name: Run Android unit tests and build signed debug APK
+        run: |
+          cd android
+          ./gradlew --no-daemon clean testDebugUnitTest assembleDebug
+
+      - name: Name APK for direct installation
+        run: |
+          mkdir -p android-dist
+          cp android/app/build/outputs/apk/debug/app-debug.apk android-dist/Fursan-LAN-Android-0.1.0.apk
+
+      - name: Upload installable APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fursan-lan-android-apk
+          path: android-dist/Fursan-LAN-Android-0.1.0.apk
+          if-no-files-found: error
+          retention-days: 30

@@ -10,7 +10,16 @@ if (!clientId) { clientId = `w${crypto.randomUUID().replaceAll('-', '')}`; local
 let connected = false, connecting = false, localPeerEndpoint = null;
 let pendingFile = null, localStream = null, callMode = null, currentMembers = [], socket = null;
 const peerSockets = new Map(), connectionSockets = new Map();
-let contacts = [], groups = [], currentChat = 'general', allMessages = [], searchTerm = '';
+function loadAndroidHistory() {
+  if (!window.FURSAN_ANDROID) return [];
+  try { const saved = JSON.parse(localStorage.getItem('fursan-android-history') || '[]'); return Array.isArray(saved) ? saved.slice(-500) : []; } catch (_) { return []; }
+}
+function persistAndroidHistory() {
+  if (!window.FURSAN_ANDROID) return;
+  try { localStorage.setItem('fursan-android-history', JSON.stringify(allMessages.slice(-500))); } catch (_) {}
+}
+let contacts = [], groups = [], currentChat = 'general', allMessages = loadAndroidHistory(), searchTerm = '';
+const fileEndpoints = new Map();
 const readSent = new Set();
 let acceptingCall = false, startingCall = false;
 const peers = new Map();
@@ -26,6 +35,11 @@ function toast(message) {
 }
 function formatTime(value) { return new Date(value || Date.now()).toLocaleTimeString('ar', { hour: '2-digit', minute: '2-digit' }); }
 function fileUrl(id) {
+  if (window.FURSAN_ANDROID) {
+    const endpoint = fileEndpoints.get(String(id));
+    if (!endpoint || !/^[0-9a-f-]{36}$/i.test(String(id))) return '#';
+    return `http://${endpoint}/api/files/${encodeURIComponent(id)}`;
+  }
   if (!localPeerEndpoint || !/^[0-9a-f-]{36}$/i.test(String(id))) return '#';
   return `http://${localPeerEndpoint.address}:${localPeerEndpoint.port}/api/files/${encodeURIComponent(id)}`;
 }
@@ -36,8 +50,23 @@ function endpointSockets(target = {}) {
   else for (const peer of peerSockets.values()) chosen.push(peer);
   return [...new Set(chosen.filter(item => item?.connected))];
 }
+function currentMemberList() {
+  const members = new Map([...peerSockets].map(([id]) => [id, { clientId: id, name: contacts.find(item => item.clientId === id)?.name || 'نظير', platform: contacts.find(item => item.clientId === id)?.platform || 'windows' }]));
+  if (!window.FURSAN_ANDROID) for (const contact of contacts) if (contact.platform === 'android' && contact.online) members.set(contact.clientId, { ...contact });
+  return [...members.values()];
+}
+function callPeerIds() {
+  const ids = new Set(peerSockets.keys());
+  if (!window.FURSAN_ANDROID) for (const contact of contacts) if (contact.platform === 'android' && contact.online) ids.add(contact.clientId);
+  return [...ids].filter(id => id !== clientId);
+}
 function emitToTarget(event, payload, target = {}) { for (const peer of endpointSockets(target)) peer.emit(event, payload); }
-function signalToPeer(client, payload) { const peer = peerSockets.get(client); if (peer?.connected) peer.emit('signal', payload); }
+function signalToPeer(client, payload) {
+  const packet = { ...payload, toClientId: client };
+  const peer = peerSockets.get(client);
+  if (peer?.connected) peer.emit('signal', packet);
+  else if (socket?.connected && contacts.some(item => item.clientId === client && item.platform === 'android' && item.online)) socket.emit('signal', packet);
+}
 function addMessage(message) {
   const box = $('messages');
   box.querySelector('.welcome')?.remove();
@@ -92,6 +121,7 @@ function renderMembers(members) {
   $('members').innerHTML = currentMembers.map(user => `<button class="member member-button" data-chat="user:${escapeHtml(user.clientId)}"><span class="avatar">${escapeHtml(user.name.slice(0, 1))}</span>${escapeHtml(user.name)}<span class="green-dot"></span></button>`).join('');
   if (localStream && callMode) currentMembers.filter(user => !previousIds.has(user.id)).forEach(user => makePeer(user.id, true));
 }
+function refreshMembers() { renderMembers(currentMemberList()); }
 function renderChatOptions() {
   const select = $('chatSelect');
   const selected = currentChat;
@@ -111,30 +141,33 @@ function handleEvent(event, data, source, local = false) {
   switch (event) {
     case 'connect':
       if (local) { connected = true; connecting = false; window._socketId = data?.id; $('connectionText').textContent = 'متصل بالشبكة المحلية — P2P'; $('networkTitle').textContent = 'شبكة الأقران'; }
+      else if (window.FURSAN_ANDROID) { connected = true; $('connectionText').textContent = `متصل مباشرةً عبر Wi‑Fi · ${source?._fursanAddress || ''}`; $('networkTitle').textContent = 'شبكة الأقران'; }
       break;
     case 'disconnect':
       connectionSockets.delete(source?._fursanAddress || '');
       for (const [id, peer] of peerSockets) if (peer === source) { peerSockets.delete(id); peers.get(id)?.close(); peers.delete(id); }
       contacts = contacts.map(contact => ({ ...contact, online: peerSockets.has(contact.clientId) }));
-      renderChatOptions(); renderMembers([...peerSockets].map(([id]) => ({ clientId: id, name: contacts.find(c => c.clientId === id)?.name || 'نظير' })));
+      if (window.FURSAN_ANDROID) connected = [...connectionSockets.values()].some(connection => connection.connected);
+      renderChatOptions(); refreshMembers();
       if (local) { connected = false; connecting = true; $('connectionText').textContent = 'انقطع الاتصال المحلي؛ جارٍ إعادة المحاولة…'; }
+      else if (window.FURSAN_ANDROID && !connected) $('connectionText').textContent = 'لا يوجد نظير متصل — جارٍ البحث عبر Wi‑Fi…';
       break;
-    case 'connect_error': if (local) $('connectionText').textContent = 'تعذر تشغيل نقطة P2P المحلية…'; break;
+    case 'connect_error': if (local) $('connectionText').textContent = 'تعذر تشغيل نقطة P2P المحلية…'; else if (window.FURSAN_ANDROID) $('connectionText').textContent = 'تعذر الوصول إلى أحد أقران Wi‑Fi…'; break;
     case 'identity': if (local) { clientId = data.clientId; localStorage.setItem('wasel-client-id', clientId); } break;
     case 'peer-profile':
       if (!local && data?.clientId && data.clientId !== clientId) {
         peerSockets.set(data.clientId, source);
-        const item = { clientId: data.clientId, name: String(data.name || 'نظير'), online: true };
+        const item = { clientId: data.clientId, name: String(data.name || 'نظير'), platform: data.platform || 'windows', online: true };
         contacts = [item, ...contacts.filter(contact => contact.clientId !== item.clientId)];
-        renderChatOptions(); renderMembers([...peerSockets].map(([id]) => ({ clientId: id, name: contacts.find(c => c.clientId === id)?.name || 'نظير' })));
+        renderChatOptions(); refreshMembers();
         for (const group of groups) source.emit('create-group', group);
         if (localStream && callMode && !peers.has(data.clientId)) makePeer(data.clientId, true);
       }
       break;
     case 'contacts': {
       const merged = new Map(contacts.map(c => [c.clientId, c]));
-      for (const item of data || []) if (item.clientId !== clientId) merged.set(item.clientId, { ...merged.get(item.clientId), ...item, online: peerSockets.has(item.clientId) });
-      contacts = [...merged.values()]; renderChatOptions(); break;
+      for (const item of data || []) if (item.clientId !== clientId) merged.set(item.clientId, { ...merged.get(item.clientId), ...item, online: local ? Boolean(item.online) : peerSockets.has(item.clientId) });
+      contacts = [...merged.values()]; renderChatOptions(); refreshMembers(); break;
     }
     case 'groups': {
       const merged = new Map(groups.map(group => [group.id, group]));
@@ -150,21 +183,27 @@ function handleEvent(event, data, source, local = false) {
     }
     case 'history': {
       const merged = new Map(allMessages.map(message => [message.id, message]));
-      for (const message of data || []) merged.set(message.id, { ...merged.get(message.id), ...message });
-      allMessages = [...merged.values()].sort((a, b) => (a.time || 0) - (b.time || 0)); renderMessages(); break;
+      for (const message of data || []) {
+        merged.set(message.id, { ...merged.get(message.id), ...message });
+        if (window.FURSAN_ANDROID && message.type === 'file' && source?._fursanAddress) fileEndpoints.set(message.id, source._fursanAddress);
+      }
+      allMessages = [...merged.values()].sort((a, b) => (a.time || 0) - (b.time || 0)); persistAndroidHistory(); renderMessages(); break;
     }
-    case 'members': if (local) renderMembers([...peerSockets].map(([id]) => ({ clientId: id, name: contacts.find(c => c.clientId === id)?.name || 'نظير' }))); break;
+    case 'members': if (local) refreshMembers(); break;
     case 'system-message': if (local) addMessage({ type: 'system', text: data.text }); break;
     case 'chat-message': {
       if (!local && data?.toId === clientId && source?.connected) socket?.emit('cache-message', data);
       const index = allMessages.findIndex(message => message.id === data.id);
       if (index >= 0) allMessages[index] = { ...allMessages[index], ...data }; else allMessages.push(data);
-      renderMessages(); break;
+      persistAndroidHistory(); renderMessages(); break;
     }
-    case 'file-message': if (!allMessages.some(message => message.id === data.id)) allMessages.push({ type: 'file', ...data }); renderMessages(); break;
+    case 'file-message':
+      if (window.FURSAN_ANDROID && source?._fursanAddress) fileEndpoints.set(data.id, source._fursanAddress);
+      if (!allMessages.some(message => message.id === data.id)) allMessages.push({ type: 'file', ...data });
+      persistAndroidHistory(); renderMessages(); break;
     case 'message-receipt': {
       const message = allMessages.find(item => item.id === data.id);
-      if (message) { const key = data.kind === 'read' ? 'readBy' : 'deliveredTo'; message[key] ||= []; if (!message[key].includes(data.clientId)) message[key].push(data.clientId); renderMessages(); }
+      if (message) { const key = data.kind === 'read' ? 'readBy' : 'deliveredTo'; message[key] ||= []; if (!message[key].includes(data.clientId)) message[key].push(data.clientId); persistAndroidHistory(); renderMessages(); }
       break;
     }
     case 'notice': toast(data); break;
@@ -182,7 +221,7 @@ function connect(address, port, local = false) {
   const events = ['connect_error', 'disconnect', 'identity', 'history', 'members', 'contacts', 'groups', 'system-message', 'chat-message', 'file-message', 'message-receipt', 'signal', 'notice', 'peer-profile'];
   connection.on('connect', () => {
     if (local) socket = connection;
-    connection.emit('join', { name: myName, clientId, local });
+    connection.emit('join', { name: myName, clientId, local, platform: window.FURSAN_ANDROID ? 'android' : 'windows' });
     handleEvent('connect', { id: connection.id }, connection, local);
   });
   for (const event of events) connection.on(event, data => handleEvent(event, data, connection, local));
@@ -206,7 +245,12 @@ function sendText() {
   const target = selectedTarget();
   const payload = { id: crypto.randomUUID(), text, ...target };
   if (target.channel === 'general') payload.recipientIds = contacts.map(contact => contact.clientId).filter(id => id !== clientId);
+  if (window.FURSAN_ANDROID && !endpointSockets(target).length) return toast('لا يوجد اتصال مباشر بهذا المستخدم عبر Wi‑Fi.');
   emitToTarget('chat', payload, target);
+  if (window.FURSAN_ANDROID) {
+    allMessages.push({ ...payload, type: 'text', user: myName, senderId: clientId, senderClientId: clientId, time: Date.now(), deliveredTo: [], readBy: [] });
+    persistAndroidHistory(); renderMessages();
+  }
   input.value = ''; input.style.height = 'auto';
 }
 function selectedTarget() {
@@ -265,7 +309,8 @@ async function runUpload(job) {
       const transferKey = connection._fursanAddress;
       const transferId = job.transferIds.get(transferKey) || crypto.randomUUID();
       job.transferIds.set(transferKey, transferId); job.activeTransferId = transferId;
-      const init = await socketAck(connection, 'upload-init', { transferId, name: job.name, mime: job.file.type, size: job.file.size, ...job.target });
+      const recipientIds = job.target.channel === 'general' ? contacts.map(contact => contact.clientId).filter(id => id !== clientId) : undefined;
+      const init = await socketAck(connection, 'upload-init', { transferId, name: job.name, mime: job.file.type, size: job.file.size, ...job.target, recipientIds });
       let offset = init.offset;
       while (!job.canceled && offset < job.file.size) {
         if (job.paused) { await new Promise(resolve => { job.resume = resolve; }); continue; }
@@ -275,7 +320,15 @@ async function runUpload(job) {
         const response = await socketAck(connection, 'upload-chunk', { transferId, offset, data: btoa(binary) });
         offset = response.offset; job.offset = peerIndex * job.file.size + offset; job.state = `إرسال مباشر إلى ${peerIndex + 1}/${destinations.length}`; renderTransfers();
       }
-      if (!job.canceled) { await socketAck(connection, 'upload-complete', { transferId }); job.transferIds.delete(transferKey); job.completedPeers.add(transferKey); }
+      if (!job.canceled) {
+        const completed = await socketAck(connection, 'upload-complete', { transferId });
+        if (window.FURSAN_ANDROID && completed.fileId && !job.androidLocalFileRecorded) {
+          fileEndpoints.set(completed.fileId, connection._fursanAddress);
+          allMessages.push({ id: completed.fileId, type: 'file', name: job.name, mime: job.file.type || 'application/octet-stream', size: job.file.size, user: myName, senderId: clientId, senderClientId: clientId, ...job.target, recipientIds, time: Date.now(), deliveredTo: [], readBy: [] });
+          job.androidLocalFileRecorded = true; persistAndroidHistory(); renderMessages();
+        }
+        job.transferIds.delete(transferKey); job.completedPeers.add(transferKey);
+      }
     }
     if (!job.canceled) { job.state = 'اكتمل الإرسال المباشر'; job.offset = job.total; renderTransfers(); setTimeout(() => { transfers.delete(job.id); renderTransfers(); }, 5000); }
   } catch (error) {
@@ -294,9 +347,14 @@ $('newGroupBtn').onclick = () => {
   const members = input.split(',').map(value => eligible[Number(value.trim()) - 1]?.clientId).filter(Boolean);
   emitToTarget('create-group', { id: crypto.randomUUID(), name, members, ownerId: clientId }, { channel: 'general' });
 };
+$('newGroupMobileBtn').onclick = $('newGroupBtn').onclick;
 $('broadcastBtn').onclick = $('broadcastHere').onclick = () => {
   const text = prompt('اكتب رسالة البث التي ستصل إلى جميع المستخدمين المعروفين، بمن فيهم غير المتصلين:');
-  if (text?.trim()) emitToTarget('broadcast', { id: crypto.randomUUID(), text: text.trim(), recipientIds: contacts.map(contact => contact.clientId).filter(id => id !== clientId) }, { channel: 'general' });
+  if (text?.trim()) {
+    const message = { id: crypto.randomUUID(), type: 'text', channel: 'broadcast', text: text.trim(), user: myName, senderId: clientId, senderClientId: clientId, recipientIds: contacts.map(contact => contact.clientId).filter(id => id !== clientId), time: Date.now(), deliveredTo: [], readBy: [] };
+    emitToTarget('broadcast', { id: message.id, text: message.text, recipientIds: message.recipientIds }, { channel: 'general' });
+    if (window.FURSAN_ANDROID) { allMessages.push(message); persistAndroidHistory(); renderMessages(); }
+  }
 };
 $('searchBtn').onclick = () => { $('searchBar').classList.toggle('hidden'); $('searchInput').focus(); };
 $('searchInput').oninput = event => { searchTerm = event.target.value.trim(); renderMessages(); };
@@ -332,8 +390,8 @@ async function startCall(mode, initiator = true) {
     showCallPanel(mode);
     if (initiator) {
       // Signaling over one ordered Socket.IO channel: invitation precedes SDP offers.
-      for (const peer of peerSockets.values()) peer.emit('signal', { description: { type: 'call-start', mode } });
-      [...peerSockets.keys()].forEach(id => makePeer(id, true));
+      callPeerIds().forEach(id => signalToPeer(id, { description: { type: 'call-start', mode } }));
+      callPeerIds().forEach(id => makePeer(id, true));
     } else {
       for (const [id, packet] of deferredDescriptions) await processDescription(id, packet);
       deferredDescriptions.clear();
@@ -421,7 +479,7 @@ async function receiveSignal(packet) {
   }
 }
 $('endCall').onclick = () => {
-  for (const peer of peerSockets.values()) peer.emit('signal', { description: { type: 'call-end' } });
+  callPeerIds().forEach(id => signalToPeer(id, { description: { type: 'call-end' } }));
   closeCall();
 };
 function closeCall() {
@@ -430,8 +488,13 @@ function closeCall() {
   localStream?.getTracks().forEach(track => track.stop()); localStream = null; callMode = null;
   $('callPanel').classList.add('hidden'); $('audioNodes').innerHTML = '';
 }
-window.addEventListener('beforeunload', () => { if (callMode) for (const peer of peerSockets.values()) peer.emit('signal', { description: { type: 'call-end' } }); for (const connection of connectionSockets.values()) connection.disconnect(); });
-window.wasel.lanInfo().then(info => {
-  if (!connected) $('connectionText').textContent = `تشغيل نظير مستقل على ${info.hostname}…`;
-  return window.wasel.startPeer();
-}).then(result => { if (result?.ok) { localPeerEndpoint = { address: '127.0.0.1', port: result.port }; connect('127.0.0.1', result.port, true); } else if (result?.error) toast(result.error); }).catch(error => toast(`تعذر تشغيل نظير P2P: ${error.message}`));
+window.addEventListener('beforeunload', () => { if (callMode) callPeerIds().forEach(id => signalToPeer(id, { description: { type: 'call-end' } })); for (const connection of connectionSockets.values()) connection.disconnect(); });
+renderChatOptions(); renderMessages();
+if (window.FURSAN_ANDROID) {
+  $('connectionText').textContent = 'جارٍ اكتشاف أجهزة فرسان لان عبر Wi‑Fi…';
+} else {
+  window.wasel.lanInfo().then(info => {
+    if (!connected) $('connectionText').textContent = `تشغيل نظير مستقل على ${info.hostname}…`;
+    return window.wasel.startPeer();
+  }).then(result => { if (result?.ok) { localPeerEndpoint = { address: '127.0.0.1', port: result.port }; connect('127.0.0.1', result.port, true); } else if (result?.error) toast(result.error); }).catch(error => toast(`تعذر تشغيل نظير P2P: ${error.message}`));
+}

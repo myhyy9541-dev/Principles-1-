@@ -51,14 +51,24 @@ function broadcastMembers() {
 function socketForClient(clientId) { return [...peers.entries()].find(([, user]) => user.clientId === clientId)?.[0] || null; }
 function broadcastContacts() {
   if (!io || !roomStore) return;
-  const contacts = roomStore.contacts.map(contact => ({ ...contact, online: Boolean(socketForClient(contact.clientId)) }));
+  const contacts = roomStore.contacts.map(contact => ({ ...contact, platform: contact.platform || 'windows', online: Boolean(socketForClient(contact.clientId)) }));
   for (const id of peers.keys()) io.to(id).emit('contacts', contacts);
 }
+function deliverToConnectedAndroid(event, message) {
+  if (!io || !roomStore || message.senderClientId !== localClientId) return;
+  const localSocket = socketForClient(localClientId);
+  for (const clientId of roomStore.messageRecipients(message)) {
+    const socketId = socketForClient(clientId);
+    if (!socketId || socketId === localSocket || peers.get(socketId)?.platform !== 'android') continue;
+    io.to(socketId).emit(event, message);
+  }
+}
 function publishMessage(message) {
-  // This process persists and delivers only to its own UI. It never forwards a
-  // received peer's payload to other peers; each sender sends directly to targets.
+  // A local Windows sender may deliver directly to its already-connected Android
+  // recipient. Payloads received from another peer are never relayed onward.
   const localSocket = localClientId ? socketForClient(localClientId) : null;
   if (localSocket) io.to(localSocket).emit('chat-message', message);
+  deliverToConnectedAndroid('chat-message', message);
 }
 function withinRate(socket, key, limit) {
   const now = Date.now();
@@ -89,10 +99,11 @@ function createPeerEndpoint() {
       const name = String(profile.name || 'مستخدم').replace(/[\r\n\0]/g, ' ').trim().slice(0, 40) || 'مستخدم';
       const clientId = String(profile.clientId || '').slice(0, 80);
       if (!/^[a-zA-Z0-9_-]{16,80}$/.test(clientId)) return socket.emit('notice', 'تعذرت قراءة هوية هذا الجهاز؛ أعد تشغيل التطبيق.');
-      const user = { id: socket.id, clientId, name, joinedAt: Date.now() };
+      const platform = profile.platform === 'android' ? 'android' : 'windows';
+      const user = { id: socket.id, clientId, name, platform, joinedAt: Date.now() };
       const remoteAddress = String(socket.handshake.address || '');
       const trustedLocal = profile.local === true && ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(remoteAddress);
-      if (trustedLocal) { localClientId = clientId; localProfile = { clientId, name }; }
+      if (trustedLocal) { localClientId = clientId; localProfile = { clientId, name, platform: 'windows' }; }
       peers.set(socket.id, user);
       socket.data.user = user;
       roomStore.rememberContact(user);
@@ -102,7 +113,7 @@ function createPeerEndpoint() {
       if (trustedLocal) for (const id of peers.keys()) if (id !== socket.id) io.to(id).emit('peer-profile', localProfile);
       socket.emit('history', roomStore.historyFor(clientId));
       socket.emit('groups', roomStore.visibleGroups(clientId));
-      socket.emit('contacts', roomStore.contacts.map(contact => ({ ...contact, online: Boolean(socketForClient(contact.clientId)) })));
+      socket.emit('contacts', roomStore.contacts.map(contact => ({ ...contact, platform: contact.platform || 'windows', online: Boolean(socketForClient(contact.clientId)) })));
       for (const message of roomStore.offlineFor(clientId)) {
         roomStore.markDelivered(message.id, clientId);
         socket.emit('chat-message', message);
@@ -173,7 +184,10 @@ function createPeerEndpoint() {
         const channel = raw?.channel === 'general' ? 'general' : 'direct';
         const toId = channel === 'direct' && !raw?.groupId ? String(raw?.toId || '') : undefined;
         if (channel === 'direct' && !raw?.groupId && !/^[a-zA-Z0-9_-]{16,80}$/.test(toId)) throw new Error('معرف النظير المستهدف غير صالح.');
-        const offset = roomStore.initUpload({ ...raw, channel, toId, user: socket.data.user.name, senderId: socket.id, senderClientId: socket.data.user.clientId });
+        const recipientIds = channel === 'general'
+          ? [...new Set((Array.isArray(raw?.recipientIds) ? raw.recipientIds : roomStore.contacts.map(contact => contact.clientId)).filter(id => /^[a-zA-Z0-9_-]{16,80}$/.test(id)))]
+          : undefined;
+        const offset = roomStore.initUpload({ ...raw, channel, toId, recipientIds, user: socket.data.user.name, senderId: socket.id, senderClientId: socket.data.user.clientId });
         acknowledge({ ok: true, offset });
       } catch (error) { acknowledge({ ok: false, error: error.message }); }
     });
@@ -191,6 +205,7 @@ function createPeerEndpoint() {
         const localSocket = localClientId ? socketForClient(localClientId) : null;
         const belongsHere = message.senderClientId === localClientId || message.channel === 'general' || (message.groupId && group?.members.includes(localClientId)) || message.toId === localClientId;
         if (localSocket && belongsHere) io.to(localSocket).emit('file-message', message);
+        deliverToConnectedAndroid('file-message', message);
         acknowledge({ ok: true, fileId: message.id });
       } catch (error) { acknowledge({ ok: false, error: error.message }); }
     });
@@ -208,15 +223,23 @@ function createPeerEndpoint() {
         const { diskName, ...message } = record;
         const localSocket = localClientId ? socketForClient(localClientId) : null;
         if (localSocket) io.to(localSocket).emit('file-message', message);
+        deliverToConnectedAndroid('file-message', message);
       } catch (error) { socket.emit('notice', error.message || 'تعذر حفظ الملف.'); }
     });
     socket.on('signal', packet => {
       if (!socket.data.user || !packet) return;
       if (!withinRate(socket, 'signal', 180)) return;
-      // Deliver signaling to this device's own UI only. The UI sends responses
-      // directly through its socket to the intended peer; media is WebRTC P2P.
       const localSocket = localClientId ? socketForClient(localClientId) : null;
-      if (localSocket && socket.data.user.clientId !== localClientId) io.to(localSocket).emit('signal', { from: socket.data.user.clientId, description: packet.description, candidate: packet.candidate });
+      const senderId = socket.data.user.clientId;
+      const targetId = String(packet.toClientId || '');
+      if (senderId === localClientId && socket.id === localSocket && targetId) {
+        const targetSocket = socketForClient(targetId);
+        if (targetSocket && peers.get(targetSocket)?.platform === 'android') io.to(targetSocket).emit('signal', { from: localClientId, description: packet.description, candidate: packet.candidate });
+        return;
+      }
+      if (localSocket && senderId !== localClientId && (!targetId || targetId === localClientId)) {
+        io.to(localSocket).emit('signal', { from: senderId, description: packet.description, candidate: packet.candidate });
+      }
     });
     socket.on('disconnect', () => {
       const user = peers.get(socket.id); peers.delete(socket.id);

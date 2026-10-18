@@ -53,6 +53,14 @@ test('isolates private history and queues messages until the recipient reconnect
   assert.deepEqual(f.store.historyFor('alice-identity-0001')[0].readBy, ['bob-identity-000001']);
 });
 
+test('persists Android platform metadata for connected contacts', t => {
+  const f = fixture(); t.after(f.cleanup);
+  f.store.rememberContact({ clientId: 'android-identity-00001', name: 'هاتف', platform: 'android' });
+  assert.equal(f.store.contacts[0].platform, 'android');
+  const reopened = new RoomStore(f.root);
+  assert.equal(reopened.contacts[0].platform, 'android');
+});
+
 test('keeps general chat out of the offline queue and persists group membership', t => {
   const f = fixture(); t.after(f.cleanup);
   f.store.rememberContact({ clientId: 'alice-identity-0001', name: 'أليس' });
@@ -70,7 +78,7 @@ test('resumes a chunked upload after reopening the room store', t => {
   const f = fixture(); t.after(f.cleanup);
   const transferId = crypto.randomUUID();
   const contents = Buffer.from('هذا ملف تجريبي مقسم إلى مقاطع');
-  const meta = { transferId, name: 'قسم/تقرير.txt', mime: 'text/plain', size: contents.length, user: 'أليس', senderId: 'socket-1', senderClientId: 'alice-identity-0001', channel: 'general' };
+  const meta = { transferId, name: 'قسم/تقرير.txt', mime: 'text/plain', size: contents.length, user: 'أليس', senderId: 'socket-1', senderClientId: 'alice-identity-0001', channel: 'general', recipientIds: ['android-identity-00001'] };
   assert.equal(f.store.initUpload(meta), 0);
   const first = contents.subarray(0, 8);
   assert.equal(f.store.appendUploadChunk(transferId, 0, first.toString('base64'), meta.senderClientId), first.length);
@@ -81,6 +89,7 @@ test('resumes a chunked upload after reopening the room store', t => {
   reopened.appendUploadChunk(transferId, first.length, rest.toString('base64'), meta.senderClientId);
   const record = reopened.finishUpload(transferId, meta.senderClientId);
   assert.equal(record.name, 'قسم/تقرير.txt');
+  assert.deepEqual(reopened.messageRecipients(record), ['android-identity-00001']);
   assert.deepEqual(fs.readFileSync(reopened.filePath(record.id)), contents);
 });
 
