@@ -37,8 +37,7 @@ tasks.register('prepareFursanWebAssets') {
         new File(repoRoot, 'src/index.html'),
         new File(repoRoot, 'src/style.css'),
         new File(repoRoot, 'src/renderer.js'),
-        new File(repoRoot, 'node_modules/socket.io-client/dist/socket.io.js'),
-        new File(projectDir, 'src/main/assets/android-adapter.js')
+        new File(repoRoot, 'node_modules/socket.io-client/dist/socket.io.js')
     )
     outputs.dir(webAssetOutput)
     doLast {
@@ -47,7 +46,6 @@ tasks.register('prepareFursanWebAssets') {
         new File(output, 'style.css').bytes = new File(repoRoot, 'src/style.css').bytes
         new File(output, 'renderer.js').bytes = new File(repoRoot, 'src/renderer.js').bytes
         new File(output, 'socket.io.js').bytes = new File(repoRoot, 'node_modules/socket.io-client/dist/socket.io.js').bytes
-        new File(output, 'android-adapter.js').bytes = new File(projectDir, 'src/main/assets/android-adapter.js').bytes
         String html = new File(repoRoot, 'src/index.html').getText('UTF-8')
         html = html.replace('../node_modules/socket.io-client/dist/socket.io.js', 'socket.io.js')
         html = html.replace('<script src="renderer.js"></script>', '<script src="android-adapter.js"></script>\n  <script src="renderer.js"></script>')
