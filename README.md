@@ -43,7 +43,7 @@ cd android
 
 يعمل CI على **JDK 26**، أحدث إصدار Java متاح عند إعداد هذا البناء، مع Gradle `9.6.0` وAndroid Gradle Plugin `9.4.0`. يستخدم كود Android ميزات/bytecode Java `17`، لا Java 26 على الهاتف؛ Android يشغّل التطبيق على ART ولا يثبّت JDK 26. اختير هذا الفصل لتشغيل أدوات البناء الحديثة مع بقاء ناتج Java ضمن مستوى التوافق الموثق لـAndroid.
 
-يشغّل سير عمل **Build Android APK** اختبارات وحدة Java ويُنتج الملف `Fursan-LAN-Android-0.1.0.apk` كـartifact لمدة 30 يومًا. يتطلب البناء المحلي Android SDK Platform 37 وBuild Tools 36.0.0.
+يشغّل سير عمل **Build Android APK** اختبارات وحدة Java ويُنتج الملف `Fursan-LAN-Android-0.1.0.apk` كـartifact لمدة 30 يومًا. يتطلب البناء المحلي Android SDK Platform 36 وBuild Tools 36.0.0.
 
 ## بناء Windows
 
