@@ -1,0 +1,11 @@
+.bluetooth-panel{display:flex;align-items:center;gap:8px;padding:9px 30px;background:#f0f8f5;border-bottom:1px solid #deebe7;font-size:11px;color:#45635f;flex-wrap:wrap}
+.bluetooth-copy{display:flex;flex-direction:column;gap:2px;min-width:220px;flex:1}
+.bluetooth-copy span{color:#829391;font-size:10px}
+.bluetooth-panel select{min-width:190px;max-width:35vw;padding:6px 9px;border:1px solid #d4e3de;border-radius:8px;background:white;color:#38504e;font:inherit}
+#bluetoothState{color:#43836d;font-size:10px}
+@media(max-width:640px){
+  .bluetooth-panel{padding:7px 8px;gap:5px}
+  .bluetooth-copy{min-width:100%;flex-basis:100%}
+  .bluetooth-panel select{min-width:0;flex:1;max-width:none;padding:5px;font-size:10px}
+  .bluetooth-panel .call-control{padding:5px 6px;font-size:9px}
+}

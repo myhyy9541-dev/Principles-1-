@@ -10,6 +10,10 @@ if (!clientId) { clientId = `w${crypto.randomUUID().replaceAll('-', '')}`; local
 let connected = false, connecting = false, localPeerEndpoint = null;
 let pendingFile = null, localStream = null, callMode = null, currentMembers = [], socket = null;
 const peerSockets = new Map(), connectionSockets = new Map();
+const bluetoothConnections = new Map(), bluetoothSockets = new Map();
+const incomingBluetoothTransfers = new Map();
+const bluetoothChatRate = new Map();
+let activeBluetoothSocket = null;
 function loadAndroidHistory() {
   if (!window.FURSAN_ANDROID) return [];
   try { const saved = JSON.parse(localStorage.getItem('fursan-android-history') || '[]'); return Array.isArray(saved) ? saved.slice(-500) : []; } catch (_) { return []; }
@@ -18,7 +22,15 @@ function persistAndroidHistory() {
   if (!window.FURSAN_ANDROID) return;
   try { localStorage.setItem('fursan-android-history', JSON.stringify(allMessages.slice(-500))); } catch (_) {}
 }
-let contacts = [], groups = [], currentChat = 'general', allMessages = loadAndroidHistory(), searchTerm = '';
+function loadAndroidGroups() {
+  if (!window.FURSAN_ANDROID) return [];
+  try { const saved = JSON.parse(localStorage.getItem('fursan-android-groups') || '[]'); return Array.isArray(saved) ? saved.slice(-200) : []; } catch (_) { return []; }
+}
+function persistAndroidGroups() {
+  if (!window.FURSAN_ANDROID) return;
+  try { localStorage.setItem('fursan-android-groups', JSON.stringify(groups.slice(-200))); } catch (_) {}
+}
+let contacts = [], groups = loadAndroidGroups(), currentChat = 'general', allMessages = loadAndroidHistory(), searchTerm = '';
 const fileEndpoints = new Map();
 const readSent = new Set();
 let acceptingCall = false, startingCall = false;
@@ -37,6 +49,7 @@ function formatTime(value) { return new Date(value || Date.now()).toLocaleTimeSt
 function fileUrl(id) {
   if (window.FURSAN_ANDROID) {
     const endpoint = fileEndpoints.get(String(id));
+    if (endpoint?.startsWith('bluetooth:')) return '#';
     if (!endpoint || !/^[0-9a-f-]{36}$/i.test(String(id))) return '#';
     return `http://${endpoint}/api/files/${encodeURIComponent(id)}`;
   }
@@ -45,9 +58,9 @@ function fileUrl(id) {
 }
 function endpointSockets(target = {}) {
   const chosen = [socket?.connected ? socket : null];
-  if (target.groupId) for (const id of groups.find(group => group.id === target.groupId)?.members || []) chosen.push(peerSockets.get(id));
-  else if (target.channel === 'direct' && target.toId) chosen.push(peerSockets.get(target.toId));
-  else for (const peer of peerSockets.values()) chosen.push(peer);
+  if (target.groupId) for (const id of groups.find(group => group.id === target.groupId)?.members || []) chosen.push(peerSockets.get(id), bluetoothSockets.get(id));
+  else if (target.channel === 'direct' && target.toId) chosen.push(peerSockets.get(target.toId), bluetoothSockets.get(target.toId));
+  else for (const peer of new Set([...peerSockets.values(), ...bluetoothSockets.values()])) chosen.push(peer);
   return [...new Set(chosen.filter(item => item?.connected))];
 }
 function currentMemberList() {
@@ -56,14 +69,19 @@ function currentMemberList() {
   return [...members.values()];
 }
 function callPeerIds() {
-  const ids = new Set(peerSockets.keys());
+  const ids = new Set([...peerSockets].filter(([, peer]) => peer.transport !== 'bluetooth').map(([id]) => id));
   if (!window.FURSAN_ANDROID) for (const contact of contacts) if (contact.platform === 'android' && contact.online) ids.add(contact.clientId);
   return [...ids].filter(id => id !== clientId);
 }
-function emitToTarget(event, payload, target = {}) { for (const peer of endpointSockets(target)) peer.emit(event, payload); }
+function emitToTarget(event, payload, target = {}) {
+  let endpoints = endpointSockets(target);
+  if (!window.FURSAN_ANDROID) endpoints = endpoints.filter(peer => peer === socket || peer.transport !== 'bluetooth');
+  for (const peer of endpoints) peer.emit(event, payload);
+}
 function signalToPeer(client, payload) {
   const packet = { ...payload, toClientId: client };
   const peer = peerSockets.get(client);
+  if (peer?.transport === 'bluetooth') return false;
   if (peer?.connected) peer.emit('signal', packet);
   else if (socket?.connected && contacts.some(item => item.clientId === client && item.platform === 'android' && item.online)) socket.emit('signal', packet);
 }
@@ -85,13 +103,21 @@ function addMessage(message) {
   let content = escapeHtml(message.text || '');
   if (message.type === 'file') {
     const url = fileUrl(message.id);
-    const preview = /^image\/(png|jpeg|gif|webp|avif)$/.test(String(message.mime || ''))
+    const bluetoothLocal = message.transport === 'bluetooth';
+    const bluetoothHistory = message.transport === 'bluetooth-history';
+    const link = bluetoothLocal
+      ? `href="#" data-bt-download="${escapeHtml(message.id)}"`
+      : bluetoothHistory ? 'href="#" data-bt-unavailable="1"' : `href="${url}"`;
+    const label = bluetoothHistory ? 'ملف قديم؛ أعد مشاركته عبر Bluetooth أو Wi‑Fi' : `ملف مشترك · ${escapeHtml(message.user)} · ${formatSize(message.size)}`;
+    const preview = !bluetoothLocal && !bluetoothHistory && /^image\/(png|jpeg|gif|webp|avif)$/.test(String(message.mime || ''))
       ? `<img class="image-preview" src="${url}?preview=1" alt="${escapeHtml(message.name)}" loading="lazy">` : '';
-    content = `<a class="file-card" download="${escapeHtml(message.name)}" href="${url}"><span class="file-icon">▤</span><span class="file-label">${escapeHtml(message.name)}<small>ملف مشترك · ${escapeHtml(message.user)} · ${formatSize(message.size)}</small></span><span>تنزيل</span></a>${preview}`;
+    content = `<a class="file-card" download="${escapeHtml(message.name)}" ${link}><span class="file-icon">▤</span><span class="file-label">${escapeHtml(message.name)}<small>${label}</small></span><span>${bluetoothHistory ? 'غير مخزن' : 'تنزيل'}</span></a>${preview}`;
   }
   const status = mine && message.channel !== 'general' ? `<span class="delivery-state">${(message.readBy || []).length ? '✓✓ تمت القراءة' : (message.deliveredTo || []).length ? '✓ تم التسليم' : '◷ قيد التسليم'}</span>` : '';
   row.innerHTML = `<div class="msg-avatar">${initial}</div><div class="bubble-wrap"><div class="msg-meta"><b>${escapeHtml(message.user || 'النظام')}</b><span class="msg-time">${formatTime(message.time)}</span>${status}</div><div class="bubble">${content}</div></div>`;
   box.append(row);
+  row.querySelector('[data-bt-download]')?.addEventListener('click', event => { event.preventDefault(); downloadBluetoothFile(message.id, message.name).catch(error => toast(error.message)); });
+  row.querySelector('[data-bt-unavailable]')?.addEventListener('click', event => { event.preventDefault(); toast('النسخة التاريخية غير محفوظة على هذا الهاتف؛ اطلب إعادة مشاركة الملف.'); });
   box.scrollTop = box.scrollHeight;
 }
 function messageBelongs(message) {
@@ -114,12 +140,93 @@ function renderMessages() {
 function formatSize(bytes = 0) {
   return bytes < 1024 * 1024 ? `${Math.max(1, Math.round(bytes / 1024))} ك.ب` : `${(bytes / 1024 / 1024).toFixed(1)} م.ب`;
 }
+async function downloadBluetoothFile(id, name) {
+  const stored = await window.FursanBluetoothFiles.getBlob(String(id));
+  const url = URL.createObjectURL(stored.blob);
+  const link = document.createElement('a'); link.href = url; link.download = name || stored.metadata.name || 'ملف'; link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+function handleBluetoothEvent(connection, event, data, acknowledge) {
+  if (event === 'create-group' && window.FURSAN_ANDROID) {
+    const id = String(data?.id || '');
+    const members = [...new Set((Array.isArray(data?.members) ? data.members : []).filter(member => /^[a-zA-Z0-9_-]{16,80}$/.test(member)))];
+    if (/^[0-9a-f-]{36}$/i.test(id) && members.includes(clientId)) {
+      groups = [...groups.filter(item => item.id !== id), { id, name: String(data.name || 'مجموعة').replace(/[\r\n\0]/g, ' ').slice(0, 60), members, ownerId: String(data.ownerId || '') }];
+      persistAndroidGroups(); renderChatOptions();
+    }
+    acknowledge?.({ ok: true }); return;
+  }
+  if (event === 'chat-message' && window.FURSAN_ANDROID) {
+    if (typeof data?.text !== 'string' || data.text.length > 5000 || !/^[0-9a-f-]{36}$/i.test(String(data.id || ''))) { acknowledge?.({ ok: false, error: 'الرسالة غير صالحة أو تتجاوز حد الحجم.' }); return; }
+    if (data?.groupId && !groups.some(group => group.id === data.groupId && group.members.includes(clientId))) { acknowledge?.({ ok: false, error: 'هذه الرسالة ليست موجهة إلى مجموعة مسجلة على الجهاز.' }); return; }
+    if (data?.channel === 'direct' && !data.groupId && data.toId !== clientId) { acknowledge?.({ ok: false, error: 'هذه الرسالة ليست موجهة إلى هذا الجهاز.' }); return; }
+    if (!data.groupId && !['direct', 'general', 'broadcast'].includes(data.channel)) { acknowledge?.({ ok: false, error: 'نوع المحادثة غير صالح.' }); return; }
+    const peerId = String(connection.remoteProfile?.clientId || connection.address || 'bluetooth-peer');
+    const recent = (bluetoothChatRate.get(peerId) || []).filter(time => Date.now() - time < 60_000);
+    if (recent.length >= 40) { acknowledge?.({ ok: false, error: 'تم تجاوز حد الرسائل المؤقت؛ حاول لاحقًا.' }); return; }
+    recent.push(Date.now()); bluetoothChatRate.set(peerId, recent);
+    handleEvent(event, data, connection, false); acknowledge?.({ ok: true }); return;
+  }
+  if (event === 'mark-read' && window.FURSAN_ANDROID) {
+    const message = allMessages.find(item => item.id === data?.id);
+    if (message) { message.readBy ||= []; const reader = connection.remoteProfile?.clientId; if (reader && !message.readBy.includes(reader)) message.readBy.push(reader); persistAndroidHistory(); renderMessages(); }
+    acknowledge?.({ ok: true }); return;
+  }
+  if (event === 'upload-init') {
+    const id = String(data?.transferId || '');
+    const size = Number(data?.size);
+    if (!window.FURSAN_ANDROID || !/^[0-9a-f-]{36}$/i.test(id) || !Number.isSafeInteger(size) || size < 1 || size > 10 * 1024 * 1024 || incomingBluetoothTransfers.size >= 4) {
+      acknowledge?.({ ok: false, error: 'بيانات الملف غير صالحة أو تجاوزت حد النقل المتزامن.' }); return;
+    }
+    const name = String(data.name || 'ملف').replace(/[\\/\r\n\0]/g, '_').slice(0, 180) || 'ملف';
+    incomingBluetoothTransfers.set(id, { size, offset: 0, name, mime: String(data.mime || 'application/octet-stream'), channel: data.channel === 'general' ? 'general' : 'direct', toId: data.toId, groupId: data.groupId, recipientIds: Array.isArray(data.recipientIds) ? data.recipientIds : [], connection });
+    acknowledge?.({ ok: true, offset: 0 }); return;
+  }
+  if (event === 'upload-chunk') {
+    (async () => {
+      const id = String(data?.transferId || '');
+      const transfer = incomingBluetoothTransfers.get(id);
+      if (!transfer || Number(data.offset) !== transfer.offset || typeof data.data !== 'string' || data.data.length > 44_000 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(data.data)) throw new Error('مقطع الملف غير صالح أو خارج الترتيب.');
+      const binary = atob(data.data);
+      if (!binary.length || binary.length > 32 * 1024 || transfer.offset + binary.length > transfer.size) throw new Error('حجم مقطع Bluetooth غير صالح.');
+      const bytes = new Uint8Array(binary.length);
+      for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
+      await window.FursanBluetoothFiles.putChunk(id, transfer.offset, bytes);
+      transfer.offset += bytes.length;
+      acknowledge?.({ ok: true, offset: transfer.offset });
+    })().catch(error => acknowledge?.({ ok: false, error: error.message || 'تعذر حفظ مقطع الملف.' }));
+    return;
+  }
+  if (event === 'upload-complete') {
+    (async () => {
+      const id = String(data?.transferId || '');
+      const transfer = incomingBluetoothTransfers.get(id);
+      if (!transfer || transfer.offset !== transfer.size) throw new Error('لم يكتمل استلام الملف.');
+      const sender = connection.remoteProfile || {};
+      const message = { id, type: 'file', name: transfer.name, mime: transfer.mime, size: transfer.size, user: sender.name || 'نظير Bluetooth', senderId: sender.clientId || '', senderClientId: sender.clientId || '', channel: transfer.channel, toId: transfer.toId || clientId, groupId: transfer.groupId, recipientIds: transfer.recipientIds, time: Date.now(), transport: 'bluetooth', deliveredTo: [], readBy: [] };
+      await window.FursanBluetoothFiles.commit({ id, name: message.name, mime: message.mime, size: message.size });
+      fileEndpoints.set(id, 'bluetooth:local');
+      if (!allMessages.some(item => item.id === id)) allMessages.push(message);
+      incomingBluetoothTransfers.delete(id); persistAndroidHistory(); renderMessages();
+      acknowledge?.({ ok: true, fileId: id });
+    })().catch(error => acknowledge?.({ ok: false, error: error.message || 'تعذر إكمال الملف.' }));
+    return;
+  }
+  if (event === 'upload-cancel') {
+    const id = String(data?.transferId || ''); incomingBluetoothTransfers.delete(id);
+    window.FursanBluetoothFiles.remove(id).catch(() => {}); return;
+  }
+  if (event === 'file-message' && window.FURSAN_ANDROID && connection.transport === 'bluetooth') {
+    handleEvent(event, { ...data, transport: 'bluetooth-history' }, connection, false); return;
+  }
+  handleEvent(event, data, connection, false);
+}
 function renderMembers(members) {
   const previousIds = new Set(currentMembers.map(member => member.id));
   currentMembers = members.filter(member => member.clientId !== clientId).map(member => ({ ...member, id: member.clientId }));
   $('memberCount').textContent = currentMembers.length;
   $('members').innerHTML = currentMembers.map(user => `<button class="member member-button" data-chat="user:${escapeHtml(user.clientId)}"><span class="avatar">${escapeHtml(user.name.slice(0, 1))}</span>${escapeHtml(user.name)}<span class="green-dot"></span></button>`).join('');
-  if (localStream && callMode) currentMembers.filter(user => !previousIds.has(user.id)).forEach(user => makePeer(user.id, true));
+  if (localStream && callMode) currentMembers.filter(user => !previousIds.has(user.id) && peerSockets.get(user.id)?.transport !== 'bluetooth').forEach(user => makePeer(user.id, true));
 }
 function refreshMembers() { renderMembers(currentMemberList()); }
 function renderChatOptions() {
@@ -141,11 +248,20 @@ function handleEvent(event, data, source, local = false) {
   switch (event) {
     case 'connect':
       if (local) { connected = true; connecting = false; window._socketId = data?.id; $('connectionText').textContent = 'متصل بالشبكة المحلية — P2P'; $('networkTitle').textContent = 'شبكة الأقران'; }
-      else if (window.FURSAN_ANDROID) { connected = true; $('connectionText').textContent = `متصل مباشرةً عبر Wi‑Fi · ${source?._fursanAddress || ''}`; $('networkTitle').textContent = 'شبكة الأقران'; }
+      else if (window.FURSAN_ANDROID) { connected = true; $('connectionText').textContent = source?.transport === 'bluetooth' ? 'متصل مباشرةً عبر Bluetooth Classic' : `متصل مباشرةً عبر Wi‑Fi · ${source?._fursanAddress || ''}`; $('networkTitle').textContent = 'شبكة الأقران'; }
       break;
     case 'disconnect':
       connectionSockets.delete(source?._fursanAddress || '');
+      if (source?.transport === 'bluetooth') {
+        bluetoothChatRate.delete(String(source.remoteProfile?.clientId || source.address || 'bluetooth-peer'));
+        for (const [id, transfer] of incomingBluetoothTransfers) if (transfer.connection === source) {
+          incomingBluetoothTransfers.delete(id);
+          window.FursanBluetoothFiles?.remove(id).catch(() => {});
+        }
+      }
       for (const [id, peer] of peerSockets) if (peer === source) { peerSockets.delete(id); peers.get(id)?.close(); peers.delete(id); }
+      for (const [id, peer] of bluetoothSockets) if (peer === source) bluetoothSockets.delete(id);
+      for (const [address, peer] of bluetoothConnections) if (peer === source) bluetoothConnections.delete(address);
       contacts = contacts.map(contact => ({ ...contact, online: peerSockets.has(contact.clientId) }));
       if (window.FURSAN_ANDROID) connected = [...connectionSockets.values()].some(connection => connection.connected);
       renderChatOptions(); refreshMembers();
@@ -157,6 +273,7 @@ function handleEvent(event, data, source, local = false) {
     case 'peer-profile':
       if (!local && data?.clientId && data.clientId !== clientId) {
         peerSockets.set(data.clientId, source);
+        if (source?.transport === 'bluetooth') bluetoothSockets.set(data.clientId, source);
         const item = { clientId: data.clientId, name: String(data.name || 'نظير'), platform: data.platform || 'windows', online: true };
         contacts = [item, ...contacts.filter(contact => contact.clientId !== item.clientId)];
         renderChatOptions(); refreshMembers();
@@ -173,7 +290,7 @@ function handleEvent(event, data, source, local = false) {
       const merged = new Map(groups.map(group => [group.id, group]));
       const newlyLearned = [];
       for (const group of data || []) { if (!merged.has(group.id)) newlyLearned.push(group); merged.set(group.id, { ...merged.get(group.id), ...group }); }
-      groups = [...merged.values()]; renderChatOptions();
+      groups = [...merged.values()]; renderChatOptions(); persistAndroidGroups();
       for (const group of newlyLearned) if (!local && !syncedGroups.has(group.id)) {
         syncedGroups.add(group.id);
         socket?.emit('create-group', group);
@@ -184,8 +301,10 @@ function handleEvent(event, data, source, local = false) {
     case 'history': {
       const merged = new Map(allMessages.map(message => [message.id, message]));
       for (const message of data || []) {
-        merged.set(message.id, { ...merged.get(message.id), ...message });
-        if (window.FURSAN_ANDROID && message.type === 'file' && source?._fursanAddress) fileEndpoints.set(message.id, source._fursanAddress);
+        const item = { ...merged.get(message.id), ...message };
+        if (window.FURSAN_ANDROID && message.type === 'file' && source?._fursanAddress === 'bluetooth:' + source.address) item.transport = 'bluetooth-history';
+        else if (window.FURSAN_ANDROID && message.type === 'file' && source?._fursanAddress) fileEndpoints.set(message.id, source._fursanAddress);
+        merged.set(message.id, item);
       }
       allMessages = [...merged.values()].sort((a, b) => (a.time || 0) - (b.time || 0)); persistAndroidHistory(); renderMessages(); break;
     }
@@ -197,10 +316,13 @@ function handleEvent(event, data, source, local = false) {
       if (index >= 0) allMessages[index] = { ...allMessages[index], ...data }; else allMessages.push(data);
       persistAndroidHistory(); renderMessages(); break;
     }
-    case 'file-message':
-      if (window.FURSAN_ANDROID && source?._fursanAddress) fileEndpoints.set(data.id, source._fursanAddress);
-      if (!allMessages.some(message => message.id === data.id)) allMessages.push({ type: 'file', ...data });
+    case 'file-message': {
+      const item = { type: 'file', ...data };
+      if (window.FURSAN_ANDROID && source?.transport === 'bluetooth') item.transport = 'bluetooth-history';
+      else if (window.FURSAN_ANDROID && source?._fursanAddress) fileEndpoints.set(data.id, source._fursanAddress);
+      if (!allMessages.some(message => message.id === data.id)) allMessages.push(item);
       persistAndroidHistory(); renderMessages(); break;
+    }
     case 'message-receipt': {
       const message = allMessages.find(item => item.id === data.id);
       if (message) { const key = data.kind === 'read' ? 'readBy' : 'deliveredTo'; message[key] ||= []; if (!message[key].includes(data.clientId)) message[key].push(data.clientId); persistAndroidHistory(); renderMessages(); }
@@ -237,15 +359,115 @@ window.wasel.onPeerStarted(data => {
   connect('127.0.0.1', data.port, true);
 });
 window.wasel.onNotice(message => toast(message));
+function registerBluetoothSocket(address, remoteProfile = null, sendHello = false) {
+  const key = String(address || 'bluetooth-peer');
+  let connection = bluetoothConnections.get(key);
+  if (connection?.connected) return connection;
+  const localProfile = { clientId, name: myName, platform: window.FURSAN_ANDROID ? 'android' : 'windows' };
+  const sendFrame = frame => window.FURSAN_ANDROID ? window.wasel.sendBluetoothFrame(key, frame) : window.wasel.sendBluetoothFrame(frame);
+  connection = new window.FursanBluetoothClient({ address: key, localProfile, sendFrame });
+  bluetoothConnections.set(key, connection);
+  connectionSockets.set(connection._fursanAddress, connection);
+  if (!window.FURSAN_ANDROID) activeBluetoothSocket = connection;
+  const events = ['history', 'members', 'contacts', 'groups', 'system-message', 'chat-message', 'file-message', 'message-receipt', 'mark-read', 'create-group', 'notice', 'upload-init', 'upload-chunk', 'upload-complete', 'upload-cancel'];
+  for (const event of events) connection.on(event, (data, acknowledge) => handleBluetoothEvent(connection, event, data, acknowledge));
+  connection.on('peer-profile', profile => {
+    bluetoothSockets.set(profile.clientId, connection);
+    handleEvent('peer-profile', profile, connection, false);
+  });
+  connection.on('connect', data => handleEvent('connect', data, connection, false));
+  connection.on('disconnect', data => handleEvent('disconnect', data, connection, false));
+  if (remoteProfile) {
+    connection.remoteProfile = { ...remoteProfile };
+    bluetoothSockets.set(remoteProfile.clientId, connection);
+    handleEvent('peer-profile', remoteProfile, connection, false);
+  }
+  if (sendHello) Promise.resolve(connection.sendHello()).catch(error => toast(`تعذر إرسال هوية Bluetooth: ${error.message}`));
+  return connection;
+}
+
+async function refreshBluetoothDevices() {
+  const select = $('bluetoothDeviceList');
+  select.replaceChildren();
+  let devices = [];
+  try { devices = await Promise.resolve(window.wasel.listBluetoothDevices?.() || []); }
+  catch (error) { toast(`تعذر قراءة أجهزة Bluetooth: ${error.message}`); }
+  if (!Array.isArray(devices) || !devices.length) {
+    const option = document.createElement('option'); option.value = ''; option.textContent = window.FURSAN_ANDROID ? 'لا توجد أجهزة مقترنة — اقترن بها من إعدادات النظام' : 'لم يُعثر على منفذ COM؛ أنشئ SPP من إعدادات Bluetooth'; select.append(option); return;
+  }
+  for (const device of devices) {
+    const option = document.createElement('option');
+    option.value = String(device.address || device.path || '');
+    option.textContent = `${String(device.name || device.label || option.value).slice(0, 100)}${device.address ? ` · ${device.address}` : ''}`;
+    select.append(option);
+  }
+}
+
+$('bluetoothBtn').onclick = async () => {
+  $('bluetoothPanel').classList.toggle('hidden');
+  if ($('bluetoothPanel').classList.contains('hidden')) return;
+  if (window.FURSAN_ANDROID) {
+    const result = window.wasel.startBluetooth();
+    if (result === 'permission-required') $('bluetoothState').textContent = 'بانتظار إذن Android…';
+    else $('bluetoothState').textContent = 'بدء مستمع Bluetooth…';
+  }
+  await refreshBluetoothDevices();
+};
+$('bluetoothRefresh').onclick = async () => {
+  if (window.FURSAN_ANDROID) window.wasel.startBluetooth();
+  await refreshBluetoothDevices();
+};
+$('bluetoothConnect').onclick = async () => {
+  const address = $('bluetoothDeviceList').value;
+  if (!address) return toast('اقرن جهازاً أو اختر منفذ Bluetooth أولاً.');
+  try {
+    const result = await Promise.resolve(window.wasel.connectBluetooth(address));
+    if (typeof result === 'string' && result.startsWith('error:')) throw new Error(result.slice(6));
+    $('bluetoothState').textContent = window.FURSAN_ANDROID ? `جارٍ الاتصال بـ ${address}…` : `منفذ ${address} مفتوح؛ بانتظار النظير…`;
+  } catch (error) { toast(`تعذر بدء اتصال Bluetooth: ${error.message}`); }
+};
+$('bluetoothDisconnect').onclick = async () => {
+  try {
+    if (window.FURSAN_ANDROID) {
+      const address = $('bluetoothDeviceList').value;
+      if (address) window.wasel.disconnectBluetooth(address);
+    } else await window.wasel.disconnectBluetooth();
+  } catch (error) { toast(`تعذر قطع Bluetooth: ${error.message}`); }
+};
+
+window.wasel.onBluetoothEvent(event => {
+  const detail = event?.detail ? { ...event.detail, type: event.type } : event;
+  if (!detail) return;
+  if (detail.type === 'ready') { $('bluetoothState').textContent = 'مستمع Bluetooth جاهز'; refreshBluetoothDevices(); }
+  else if (detail.type === 'port-open') $('bluetoothState').textContent = `منفذ ${detail.path} مفتوح؛ جارٍ المصافحة…`;
+  else if (detail.type === 'peer-connected') {
+    const address = window.FURSAN_ANDROID ? detail.address : detail.path;
+    const profile = detail.clientId ? { clientId: detail.clientId, name: detail.name, platform: detail.platform } : null;
+    registerBluetoothSocket(address, profile, window.FURSAN_ANDROID);
+    $('bluetoothState').textContent = `متصل مباشرةً بـ ${detail.name || 'نظير Bluetooth'}`;
+  } else if (detail.type === 'peer-pending') $('bluetoothState').textContent = 'تم العثور على النظير؛ جارٍ تهيئة الاتصال المحلي…';
+  else if (detail.type === 'peer-disconnected') {
+    for (const [key, peer] of bluetoothConnections) if (peer.remoteProfile?.clientId === detail.clientId) peer.close();
+    $('bluetoothState').textContent = 'انقطع النظير؛ منفذ Bluetooth ما زال مفتوحاً';
+  } else if (detail.type === 'frame') {
+    const peer = window.FURSAN_ANDROID ? bluetoothConnections.get(detail.address) : activeBluetoothSocket;
+    peer?.receive(detail.frame);
+  } else if (detail.type === 'disconnected') {
+    for (const peer of bluetoothConnections.values()) peer.close();
+    bluetoothConnections.clear(); bluetoothSockets.clear(); activeBluetoothSocket = null;
+    $('bluetoothState').textContent = 'غير متصل';
+  } else if (detail.type === 'notice') toast(detail.message || 'تعذر اتصال Bluetooth.');
+});
+
 function sendText() {
   const input = $('messageInput');
-  const text = input.value.trim();
+  const text = input.value.trim().slice(0, 5000);
   if (!text) return;
   if (!connected) return toast('انتظر اتصال النظير المحلي');
   const target = selectedTarget();
   const payload = { id: crypto.randomUUID(), text, ...target };
   if (target.channel === 'general') payload.recipientIds = contacts.map(contact => contact.clientId).filter(id => id !== clientId);
-  if (window.FURSAN_ANDROID && !endpointSockets(target).length) return toast('لا يوجد اتصال مباشر بهذا المستخدم عبر Wi‑Fi.');
+  if (window.FURSAN_ANDROID && !endpointSockets(target).length) return toast('لا يوجد اتصال مباشر بهذا المستخدم عبر Wi‑Fi أو Bluetooth.');
   emitToTarget('chat', payload, target);
   if (window.FURSAN_ANDROID) {
     allMessages.push({ ...payload, type: 'text', user: myName, senderId: clientId, senderClientId: clientId, time: Date.now(), deliveredTo: [], readBy: [] });
@@ -314,7 +536,7 @@ async function runUpload(job) {
       let offset = init.offset;
       while (!job.canceled && offset < job.file.size) {
         if (job.paused) { await new Promise(resolve => { job.resume = resolve; }); continue; }
-        const end = Math.min(offset + 48 * 1024, job.file.size);
+        const end = Math.min(offset + 32 * 1024, job.file.size);
         const bytes = new Uint8Array(await job.file.slice(offset, end).arrayBuffer());
         let binary = ''; for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
         const response = await socketAck(connection, 'upload-chunk', { transferId, offset, data: btoa(binary) });
@@ -323,8 +545,13 @@ async function runUpload(job) {
       if (!job.canceled) {
         const completed = await socketAck(connection, 'upload-complete', { transferId });
         if (window.FURSAN_ANDROID && completed.fileId && !job.androidLocalFileRecorded) {
-          fileEndpoints.set(completed.fileId, connection._fursanAddress);
-          allMessages.push({ id: completed.fileId, type: 'file', name: job.name, mime: job.file.type || 'application/octet-stream', size: job.file.size, user: myName, senderId: clientId, senderClientId: clientId, ...job.target, recipientIds, time: Date.now(), deliveredTo: [], readBy: [] });
+          const bluetooth = connection.transport === 'bluetooth';
+          if (bluetooth) {
+            try { await window.FursanBluetoothFiles.saveBlob(completed.fileId, job.file, job.name, job.file.type || 'application/octet-stream'); }
+            catch (error) { toast(`أُرسل الملف، لكن تعذر حفظ نسخة محلية: ${error.message}`); }
+          }
+          fileEndpoints.set(completed.fileId, bluetooth ? 'bluetooth:local' : connection._fursanAddress);
+          allMessages.push({ id: completed.fileId, type: 'file', name: job.name, mime: job.file.type || 'application/octet-stream', size: job.file.size, user: myName, senderId: clientId, senderClientId: clientId, ...job.target, recipientIds, time: Date.now(), deliveredTo: [], readBy: [], ...(bluetooth ? { transport: 'bluetooth' } : {}) });
           job.androidLocalFileRecorded = true; persistAndroidHistory(); renderMessages();
         }
         job.transferIds.delete(transferKey); job.completedPeers.add(transferKey);

@@ -1,39 +1,53 @@
 # فرسان لان — مراسلة P2P محلية
 
-تطبيق مراسلة عربي RTL. يعمل عميل Windows كنظير مستقل، ويضيف إصدار Android رفيقًا يتصل تلقائيًا بأقران Windows على شبكة Wi‑Fi المحلية. محتوى الرسائل والملفات ينتقل مباشرة بين الجهازين المستهدفين؛ لا توجد خدمة سحابية أو خادم وسيط لإعادة توجيه محتوى الأقران. إصدار Windows الحالي `0.4.1` وإصدار Android الأول `0.1.0`.
+تطبيق مراسلة عربي RTL. يعمل كل جهاز كنظير مستقل؛ يكتشف Windows أقرانه على شبكة Wi‑Fi المحلية، ويمكن ربط Windows وAndroid أو هاتفين Android مباشرةً عبر Bluetooth Classic بعد الاقتران. لا توجد خدمة سحابية أو خادم مركزي يرحّل محتوى الرسائل أو الملفات. إصدار Windows الحالي `0.5.0` وإصدار Android `0.2.0`.
 
 > هذا تنفيذ مستقل لأفكار المراسلة المحلية؛ لم تُنسخ شيفرة LAN Messenger المرخّصة GPL-3.0. ترخيص هذا المشروع MIT.
 
-## طريقة الاتصال
+## طرق الاتصال
 
-1. يفتح كل عميل Windows نقطة اتصال محلية على TCP `43821` ويعلن عن نفسه عبر UDP broadcast على `43820`.
-2. يستمع تطبيق Android لإعلانات Windows على الشبكة نفسها، ثم يفتح اتصال Socket.IO مباشرًا بكل نظير Windows مكتشف. لا يحتاج المستخدم إلى إدخال عنوان IP أو إنشاء غرفة.
-3. يرسل عميل Android الرسالة أو الملف مباشرة إلى نقطة النظير المقصود. عند إرسال مستخدم Windows إلى هاتف Android متصل، يسلّم جهاز Windows المستقبِل المحتوى عبر الاتصال المباشر نفسه إلى الهاتف المقصود؛ لا يمرّر حمولة وصلت إليه من نظير آخر إلى ثالث.
-4. ملفات Android تُحمّل من نقطة الجهاز الذي أرسلها مباشرةً. الصوت والكاميرا يستخدمان WebRTC مع وسائط مباشرة بين الطرفين؛ يقتصر التفاوض على إشارات الاتصال بين هذين الطرفين.
-
-تطبيق Android في هذا الإصدار عميل Wi‑Fi يتصل بأقران Windows المكتشفين، ولا يفتح منفذ استماع خاصًا بالهاتف. لذلك لا يدعم الاتصال المباشر Android‑إلى‑Android بعد، ولا يدعم Bluetooth. هذه نقطة توافق معلنة وليست ادعاءً بوجود mesh كامل على Android.
+1. **Wi‑Fi:** يفتح عميل Windows نقطة نظير محلية على TCP `43821` ويعلن عبر UDP broadcast على `43820`. يكتشف Android أقران Windows تلقائيًا على الشبكة نفسها. الرسائل والملفات تنتقل إلى النظير المستهدف عبر وصلة مباشرة.
+2. **Bluetooth Classic/RFCOMM:** يقترن المستخدم بالجهاز الآخر من إعدادات النظام. يستمع Android لاتصالات RFCOMM ويستطيع بدء اتصال بجهاز مقترن؛ يتصل Windows عبر منفذ Bluetooth SPP/COM الصادر. لا يحتاج النقل إلى عنوان IP أو خادم وسيط.
+3. **مشاركة الملفات:** ترسل الملفات على شكل أجزاء 32 كيلوبايت، ويُحفظ محتوى Bluetooth محليًا في IndexedDB على Android بدل الاحتفاظ بالملف كاملًا في ذاكرة التطبيق. حد الملف الحالي 10 ميغابايت.
+4. **الصوت والكاميرا:** مكالمات WebRTC المباشرة متاحة عبر Wi‑Fi/IP فقط. Bluetooth Classic في هذا الإصدار مخصص للرسائل والملفات، وليس ناقلًا لصوت/فيديو أو إشارة WebRTC.
 
 ## الميزات
 
-- اكتشاف تلقائي للأقران داخل الشبكة المحلية عبر UDP broadcast.
-- دردشة عامة وخاصة ومجموعات، مع سجل محلي وإيصالات التسليم/القراءة.
-- رسائل خاصة مؤجلة لدى نظير Windows المستهدف حتى عودة اتصال المستلم به.
-- مشاركة ملفات مباشرة ومجزأة مع تقدم النقل وإيقاف/استئناف/إلغاء؛ حد الملف 10 ميغابايت.
-- تنزيل ملفات Android إلى مجلد `Downloads` على الهاتف؛ معاينة الصور.
+- اكتشاف Windows تلقائيًا عبر UDP broadcast في الشبكة المحلية.
+- دردشة عامة وخاصة ومجموعات وسجل محلي وإيصالات التسليم/القراءة.
+- اتصال Bluetooth Classic مباشر بين Android وWindows، وبين هاتفين Android مقترنين.
+- مشاركة ملفات P2P مجزأة، مع تقدم النقل وإيقاف/استئناف/إلغاء؛ حد الملف 10 ميغابايت.
+- Android يحتفظ بملفات Bluetooth في IndexedDB وينزّلها إلى الهاتف؛ ملفات Wi‑Fi تُحمّل من النظير الذي يخزنها.
 - مكالمات صوتية ومرئية WebRTC عبر Wi‑Fi مع التحكم بالميكروفون والكاميرا.
-- واجهة عربية RTL؛ تصميم متجاوب لشاشات الهواتف.
-- لا يتطلب Android Bluetooth أو خدمات سحابية.
+- واجهة عربية RTL متجاوبة لشاشات الهواتف، ولا يعتمد Bluetooth على اتصال إنترنت.
+
+## استخدام Bluetooth
+
+### Android ↔ Android
+
+1. فعّل Bluetooth على الهاتفين، واجعلهما قابلين للاكتشاف مؤقتًا عند الحاجة، ثم أجرِ الاقتران من إعدادات Android. يجب أن يكون Bluetooth Classic مدعومًا على الجهازين.
+2. افتح «فرسان لان» على الهاتفين، اضغط **بلوتوث**، واسمح بإذن «الأجهزة القريبة» عند الطلب. يبدأ كل هاتف مستمع RFCOMM.
+3. على أحد الهاتفين اختر الجهاز المقترن من القائمة واضغط **اتصال**. بعد ظهور حالة الاتصال، يمكن بدء محادثة مباشرة ومشاركة ملف.
+
+### Android ↔ Windows
+
+1. اقترن الهاتف والكمبيوتر من إعدادات Bluetooth في النظام. على Android افتح لوحة Bluetooth في فرسان لان حتى يبدأ مستمع RFCOMM.
+2. في Windows، أنشئ **Outgoing COM port** لخدمة Serial Port Profile (SPP) الخاصة بالهاتف من إعدادات Bluetooth/COM Ports. تتطلب بعض إصدارات Windows تفعيل خدمة Serial Port على الهاتف أولًا.
+3. في فرسان لان على Windows افتح لوحة Bluetooth، حدّث المنافذ، اختر منفذ COM الصادر واضغط **اتصال**. ابدأ أيضًا الاقتران/المستمع على Android قبل الاتصال.
+4. النقل عبر Bluetooth لا يفتح تلقائيًا عند بدء التطبيق: الاقتران واختيار COM/الجهاز إجراء صريح من المستخدم. إذا انقطع الرابط، أعد الاتصال من اللوحة.
 
 ## تشغيل Android على Wi‑Fi
 
 1. وصّل الهاتف وأجهزة Windows إلى شبكة Wi‑Fi محلية واحدة، مع السماح بحركة الأجهزة بينها وإيقاف عزل عملاء Wi‑Fi.
 2. اسمح لـ«فرسان لان» في Windows Firewall ضمن الشبكات الخاصة. يستخدم Windows TCP `43821` للاتصالات وUDP `43820` للاكتشاف، إضافة إلى حركة UDP الخاصة بـWebRTC.
-3. ثبّت APK وافتح التطبيق؛ سيبحث عن أقران Windows تلقائيًا. عند أول مكالمة سيطلب Android إذني الميكروفون و/أو الكاميرا حسب نوع المكالمة. يفتح منتقي Android عند إرفاق ملف.
-4. يتطلب التطبيق Android 8.0 (API 26) أو أحدث. أُخرج APK الحالي كحزمة Debug موقعة بمفتاح Debug لتثبيت جانبي واختبار مباشر؛ ليس إصدار متجر Play ولا يتضمن توقيع إصدار خاصًا بالمستخدم. قد تحتاج إلى السماح لمتصفح الهاتف بتثبيت التطبيقات غير المعروفة.
+3. ثبّت APK وافتح التطبيق؛ سيبحث عن أقران Windows تلقائيًا. عند أول مكالمة سيطلب Android إذني الميكروفون و/أو الكاميرا حسب نوع المكالمة.
+4. يتطلب Android 8.0 (API 26) أو أحدث. APK الاختبار موقّع بمفتاح Debug للتثبيت الجانبي، وليس إصدار متجر Play. قد تحتاج إلى السماح لمتصفح الهاتف بتثبيت التطبيقات غير المعروفة.
 
-## بناء Android
+## البناء
 
-يعيد Gradle استخدام `src/index.html` و`src/style.css` و`src/renderer.js` وSocket.IO من المشروع نفسه، لتقليل اختلاف السلوك بين Windows وAndroid.
+### Android
+
+يعيد Gradle استخدام واجهة `src/` وSocket.IO من المشروع نفسه. يتطلب بناء APK Android SDK Platform 36 وBuild Tools 36.0.0.
 
 ```bash
 npm ci
@@ -41,13 +55,11 @@ cd android
 ./gradlew testDebugUnitTest assembleDebug
 ```
 
-يعمل CI على **JDK 26**، أحدث إصدار Java متاح عند إعداد هذا البناء، مع Gradle `9.6.0` وAndroid Gradle Plugin `9.4.0`. يستخدم كود Android ميزات/bytecode Java `17`، لا Java 26 على الهاتف؛ Android يشغّل التطبيق على ART ولا يثبّت JDK 26. اختير هذا الفصل لتشغيل أدوات البناء الحديثة مع بقاء ناتج Java ضمن مستوى التوافق الموثق لـAndroid.
+يشغّل CI على **JDK 26**، أحدث إصدار Java تم اختياره لبيئة البناء، مع Gradle `9.6.0` وAndroid Gradle Plugin `9.4.0`. يستخدم كود التطبيق bytecode Java `17`؛ الهاتف لا يثبّت JDK 26، بل يشغّل التطبيق على Android Runtime (ART). يرفع سير عمل **Build Android APK** ملف `Fursan-LAN-Android-0.2.0.apk` كـartifact لمدة 30 يومًا.
 
-يشغّل سير عمل **Build Android APK** اختبارات وحدة Java ويُنتج الملف `Fursan-LAN-Android-0.1.0.apk` كـartifact لمدة 30 يومًا. يتطلب البناء المحلي Android SDK Platform 36 وBuild Tools 36.0.0.
+### Windows
 
-## بناء Windows
-
-يتطلب Node.js `22.12` أو أحدث لبناء تطبيق Windows؛ يعمل ملف Windows النهائي دون تثبيت Node.js.
+يتطلب بناء Windows Node.js `22.12` أو أحدث؛ ملف Windows النهائي لا يحتاج إلى تثبيت Node.js.
 
 ```bash
 npm ci
@@ -56,24 +68,28 @@ npm run build:win
 npm run build:portable
 ```
 
-ينشئ `npm run build:win` مثبت NSIS باسم `Fursan-Lan-Setup-0.4.1-x64.exe`، وينشئ `npm run build:portable` نسخة محمولة باسم `Fursan-Lan-Portable-0.4.1-x64.exe` في `release/`. يرفع سير عمل **Build Windows installer** في GitHub Actions المثبّت والنسخة المحمولة كـartifactين منفصلين.
+ينتج مثبت NSIS ونسخة portable باسمين مستقلين داخل `release/`. يُضمّن Windows دعم Bluetooth عبر منفذ SPP/COM باستخدام serialport.
 
 ## الحدود والأمان
 
-- **Bluetooth:** غير مدعوم؛ Android يستخدم Wi‑Fi/IP فقط.
-- **Android إلى Android:** غير مدعوم بعد؛ Android يتصل بأقران Windows ولا يستضيف نقطة استقبال على الهاتف.
-- **الشبكات الفرعية المختلفة أو الإنترنت/VPN:** غير مختبرة؛ الاكتشاف الحالي يعتمد UDP broadcast، والاتصال يحتاج مسار IP مباشرًا بلا NAT.
-- **التشفير:** اتصالات Socket.IO/HTTP المحلية غير مشفرة ولا توجد مصادقة تشفيرية موثوقة لهوية الأجهزة. استخدمه على شبكة موثوقة فقط، ولا تتبادل معلومات حساسة قبل إضافة TLS/تشفير طرفي ومصادقة أقران ومراجعة أمنية.
-- ملفات Windows غير موقعة رقميًا؛ APK الحالي موقّع بمفتاح Debug للاختبار الجانبي فقط.
+- Bluetooth يحتاج **Bluetooth Classic/RFCOMM**، واقترانًا مسبقًا. لا يستخدم BLE، ولا ينشئ اقتران النظام نيابة عن المستخدم. يتطلب Windows منفذ COM صادرًا متوافقًا؛ توفره يختلف حسب محول Bluetooth والتعريفات.
+- Android-to-Android عبر Wi‑Fi لا يزال غير مدعوم؛ مسار Android-to-Android المضاف هنا هو Bluetooth فقط.
+- مكالمات الصوت/الفيديو لا تعمل عبر Bluetooth؛ يلزم مسار IP مباشر لاستخدام WebRTC.
+- الشبكات الفرعية المختلفة أو الإنترنت/VPN غير مختبرة؛ الاكتشاف يعتمد UDP broadcast. قد تمنع سياسات العزل أو جدار الحماية اتصال Wi‑Fi.
+- لا توجد مصادقة تشفيرية على مستوى التطبيق أو تشفير طرفي مستقل. اقتران Bluetooth قد يوفّر حماية وصلة النظام، لكنه ليس بديلًا عن E2EE ومصادقة هوية الأقران. استخدم التطبيق على أجهزة وشبكات موثوقة فقط، ولا تتبادل معلومات شديدة الحساسية.
+- اختبارات CI والوحدات لا تثبت التوافق مع كل هاتف أو محول/تعريف Windows. يلزم اختبار عتادي فعلي قبل وصف التوافق بأنه شامل. ملفات Windows غير موقعة رقميًا وAPK Debug غير مخصص للنشر التجاري.
 
-## مراجع توافق Java/Android
+## Java ومراجع التوافق
 
 - [Oracle: إصدار Java 26](https://www.oracle.com/news/announcement/oracle-releases-java-26-2026-03-17/)
-- [Android: توافق Android Gradle Plugin 9.4](https://developer.android.com/build/releases/agp-9-4-0-release-notes) — Gradle `9.6.0` وJDK `17` كحد أدنى.
-- [Gradle: مصفوفة توافق JVM](https://docs.gradle.org/current/userguide/compatibility.html) — تشغيل Gradle على JDK 26 مدعوم من Gradle `9.4.0` فصاعدًا.
-- [Android: إعدادات JDK وJava للـbuild](https://developer.android.com/build/jdks) — يوصي Android بتحديد toolchain، ويشرح اختلاف JDK المستخدم لتشغيل Gradle عن Java source/target في التطبيق.
-- [AndroidX WebKit: الإصدارات](https://developer.android.com/jetpack/androidx/releases/webkit) — يستخدم التطبيق الإصدار المستقر `1.17.1` لأداة WebViewAssetLoader.
+- [Android: توافق Android Gradle Plugin 9.4](https://developer.android.com/build/releases/agp-9-4-0-release-notes)
+- [Gradle: مصفوفة توافق JVM](https://docs.gradle.org/current/userguide/compatibility.html)
+- [Android: إعدادات JDK وJava للـbuild](https://developer.android.com/build/jdks)
+- [Android: Bluetooth permissions](https://developer.android.com/develop/connectivity/bluetooth/bt-permissions)
+- [Android: RFCOMM connect](https://developer.android.com/develop/connectivity/bluetooth/connect-bluetooth-devices)
+- [Android: نقل البيانات عبر BluetoothSocket](https://developer.android.com/develop/connectivity/bluetooth/transfer-data)
+- [Microsoft: Bluetooth RFCOMM على Windows](https://learn.microsoft.com/en-us/windows/apps/develop/devices-sensors/send-or-receive-files-with-rfcomm)
 
 ## الاختبارات
 
-`npm test` يختبر مخزن الرسائل والملفات والمجموعات والخصوصية واستئناف النقل، بما في ذلك حفظ هوية Android ومستلمي الملفات. `./gradlew testDebugUnitTest` يختبر عقد الاكتشاف وسياسة LAN. على Linux يمكن تشغيل `xvfb-run -a node scripts/android-interop-smoke.cjs` للتحقق من رسائل Android ذهابًا وإيابًا، ومنع إعادة التوجيه إلى نظير ثالث، وإشارات المكالمات وبيانات/تنزيل الملفات عبر خادم Windows الفعلي؛ يمثّل الاختبار الهاتف بعميل Socket.IO ولا يحل محل تجربة الهاتف الحقيقية. يلزم اختبار عملي على هاتف Android وجهازي Windows فعليين للتحقق من بث Wi‑Fi وجدار الحماية وجودة WebRTC؛ نجاح بناء CI وحده لا يثبت التوافق على كل طراز هاتف أو شبكة.
+`npm test` يشمل اختبارات مخزن الرسائل والملفات والخصوصية، وبروتوكول RFCOMM، وعميل Bluetooth، وموصل COM، ومخزن IndexedDB. يختبر `./gradlew testDebugUnitTest` ترميز إطارات Java واكتشاف الأقران وسياسة عناوين LAN. اختبار البروتوكول لا يحل محل الاقتران والنقل بين أجهزة حقيقية؛ يلزم اختبار هاتف Android فعلي وWindows مع SPP/COM للتحقق من خصائص المحول وسرعة النقل واستقرار الاتصال.

@@ -3,6 +3,8 @@ package com.fursan.lan.android;
 import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.bluetooth.BluetoothAdapter;
+import android.bluetooth.BluetoothDevice;
 import android.app.DownloadManager;
 import android.content.ClipData;
 import android.content.Intent;
@@ -13,6 +15,7 @@ import android.net.NetworkCapabilities;
 import android.net.Uri;
 import android.net.wifi.WifiManager;
 import android.os.Bundle;
+import android.os.Build;
 import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
@@ -20,6 +23,7 @@ import android.util.Log;
 import android.view.ViewGroup;
 import android.view.Window;
 import android.webkit.ConsoleMessage;
+import android.webkit.JavascriptInterface;
 import android.webkit.PermissionRequest;
 import android.webkit.URLUtil;
 import android.webkit.ValueCallback;
@@ -33,21 +37,25 @@ import android.widget.Toast;
 
 import androidx.webkit.WebViewAssetLoader;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.Set;
+import java.nio.charset.StandardCharsets;
 
-public final class MainActivity extends Activity implements PeerDiscovery.Listener {
+public final class MainActivity extends Activity implements PeerDiscovery.Listener, BluetoothPeerService.Listener {
     private static final String TAG = "FursanLanAndroid";
     private static final String ASSET_HOST = "appassets.androidplatform.net";
     private static final int FILE_REQUEST = 7101;
     private static final int MEDIA_REQUEST = 7102;
+    private static final int BLUETOOTH_REQUEST = 7103;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final Set<String> knownPeers = new LinkedHashSet<>();
     private WebView webView;
     private PeerDiscovery discovery;
+    private volatile BluetoothPeerService bluetoothService;
     private ConnectivityManager connectivityManager;
     private WifiManager.MulticastLock multicastLock;
     private ValueCallback<Uri[]> fileChooserCallback;
@@ -65,6 +73,7 @@ public final class MainActivity extends Activity implements PeerDiscovery.Listen
         webView = new WebView(this);
         webView.setLayoutParams(new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         setContentView(webView);
+        webView.addJavascriptInterface(new BluetoothJsBridge(), "FursanBluetooth");
 
         WebSettings settings = webView.getSettings();
         settings.setJavaScriptEnabled(true);
@@ -89,7 +98,7 @@ public final class MainActivity extends Activity implements PeerDiscovery.Listen
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 Uri uri = request.getUrl();
-                return !ASSET_HOST.equals(uri.getHost()) && !("http".equalsIgnoreCase(uri.getScheme()) && LanAddressPolicy.isPrivateLanAddress(uri.getHost()));
+                return !ASSET_HOST.equals(uri.getHost()) && !isKnownPeerFileUrl(uri);
             }
 
             @Override
@@ -191,6 +200,14 @@ public final class MainActivity extends Activity implements PeerDiscovery.Listen
         return false;
     }
 
+    private boolean isKnownPeerFileUrl(Uri uri) {
+        if (!"http".equalsIgnoreCase(uri.getScheme()) || uri.getPort() != 43821
+                || !LanAddressPolicy.isPrivateLanAddress(uri.getHost())) return false;
+        String path = uri.getPath();
+        if (path == null || !path.matches("/api/files/[0-9a-fA-F-]{36}")) return false;
+        return knownPeers.contains(uri.getHost() + ":" + uri.getPort());
+    }
+
     @Override
     protected void onResume() {
         super.onResume();
@@ -228,6 +245,127 @@ public final class MainActivity extends Activity implements PeerDiscovery.Listen
         });
     }
 
+    private boolean hasBluetoothPermission() {
+        return Build.VERSION.SDK_INT < 31
+                || checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    private void startBluetoothService() {
+        if (bluetoothService != null) return;
+        try {
+            BluetoothAdapter adapter = BluetoothAdapter.getDefaultAdapter();
+            BluetoothPeerService service = new BluetoothPeerService(adapter, this);
+            service.start();
+            bluetoothService = service;
+            dispatchBluetoothEvent("ready", new JSONObject());
+        } catch (Exception error) {
+            JSONObject detail = new JSONObject();
+            try { detail.put("message", "تعذر تشغيل Bluetooth: " + error.getMessage()); } catch (Exception ignored) { }
+            dispatchBluetoothEvent("notice", detail);
+        }
+    }
+
+    private void dispatchBluetoothEvent(String type, JSONObject detail) {
+        JSONObject event = new JSONObject();
+        try { event.put("type", type); event.put("detail", detail); } catch (Exception ignored) { return; }
+        String script = "window.dispatchEvent(new CustomEvent('fursan-bt-event',{detail:" + event.toString() + "}));";
+        mainHandler.post(() -> { if (webView != null && pageReady) webView.evaluateJavascript(script, null); });
+    }
+
+    @Override
+    public void onPeerConnected(String address, String name) {
+        JSONObject detail = new JSONObject();
+        try { detail.put("address", address); detail.put("name", name); } catch (Exception ignored) { return; }
+        dispatchBluetoothEvent("peer-connected", detail);
+    }
+
+    @Override
+    public void onPeerDisconnected(String address) {
+        JSONObject detail = new JSONObject();
+        try { detail.put("address", address); } catch (Exception ignored) { return; }
+        dispatchBluetoothEvent("peer-disconnected", detail);
+    }
+
+    @Override
+    public void onFrame(String address, JSONObject frame) {
+        JSONObject detail = new JSONObject();
+        try { detail.put("address", address); detail.put("frame", frame); } catch (Exception ignored) { return; }
+        dispatchBluetoothEvent("frame", detail);
+    }
+
+    @Override
+    public void onError(String message) {
+        JSONObject detail = new JSONObject();
+        try { detail.put("message", message); } catch (Exception ignored) { }
+        dispatchBluetoothEvent("notice", detail);
+    }
+
+    private final class BluetoothJsBridge {
+        @JavascriptInterface
+        public String start() {
+            if (Build.VERSION.SDK_INT >= 31 && !hasBluetoothPermission()) {
+                runOnUiThread(() -> requestPermissions(new String[]{Manifest.permission.BLUETOOTH_CONNECT}, BLUETOOTH_REQUEST));
+                return "permission-required";
+            }
+            runOnUiThread(MainActivity.this::startBluetoothService);
+            return "starting";
+        }
+
+        @JavascriptInterface
+        public String listBondedDevices() {
+            JSONArray result = new JSONArray();
+            if (!hasBluetoothPermission()) return result.toString();
+            BluetoothAdapter adapter = BluetoothAdapter.getDefaultAdapter();
+            if (adapter == null) return result.toString();
+            try {
+                for (BluetoothDevice device : adapter.getBondedDevices()) {
+                    JSONObject item = new JSONObject();
+                    item.put("address", device.getAddress());
+                    item.put("name", device.getName() == null ? "جهاز Bluetooth" : device.getName());
+                    result.put(item);
+                }
+            } catch (Exception error) {
+                Log.w(TAG, "Could not enumerate paired Bluetooth devices", error);
+            }
+            return result.toString();
+        }
+
+        @JavascriptInterface
+        public String connect(String address) {
+            BluetoothPeerService service = bluetoothService;
+            if (service == null) return "not-started";
+            try { service.connect(address); return "connecting"; }
+            catch (Exception error) { return "error:" + error.getMessage(); }
+        }
+
+        @JavascriptInterface
+        public boolean send(String address, String frameJson) {
+            BluetoothPeerService service = bluetoothService;
+            if (service == null || frameJson == null || frameJson.length() > BluetoothFrameCodec.MAX_FRAME_BYTES) return false;
+            try {
+                JSONObject frame = new JSONObject(frameJson);
+                if (frame.toString().getBytes(StandardCharsets.UTF_8).length > BluetoothFrameCodec.MAX_FRAME_BYTES) return false;
+                return service.send(address, frame);
+            }
+            catch (Exception error) { return false; }
+        }
+
+        @JavascriptInterface
+        public void disconnect(String address) {
+            BluetoothPeerService service = bluetoothService;
+            if (service != null) service.disconnect(address);
+        }
+
+        @JavascriptInterface
+        public void stop() {
+            runOnUiThread(() -> {
+                BluetoothPeerService service = bluetoothService;
+                bluetoothService = null;
+                if (service != null) service.close();
+            });
+        }
+    }
+
     private void handleWebPermissionRequest(PermissionRequest request) {
         if (request.getOrigin() == null || !ASSET_HOST.equals(request.getOrigin().getHost())) {
             request.deny();
@@ -261,6 +399,15 @@ public final class MainActivity extends Activity implements PeerDiscovery.Listen
     @Override
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == BLUETOOTH_REQUEST) {
+            if (hasBluetoothPermission()) startBluetoothService();
+            else {
+                JSONObject detail = new JSONObject();
+                try { detail.put("message", "يلزم إذن الأجهزة القريبة لاستخدام Bluetooth."); } catch (Exception ignored) { }
+                dispatchBluetoothEvent("notice", detail);
+            }
+            return;
+        }
         if (requestCode != MEDIA_REQUEST || pendingMediaRequest == null) return;
         ArrayList<String> allowed = new ArrayList<>();
         for (String resource : pendingWebResources) {
@@ -322,6 +469,9 @@ public final class MainActivity extends Activity implements PeerDiscovery.Listen
 
     @Override
     protected void onDestroy() {
+        BluetoothPeerService activeBluetooth = bluetoothService;
+        bluetoothService = null;
+        if (activeBluetooth != null) activeBluetooth.close();
         if (discovery != null) discovery.close();
         if (multicastLock != null && multicastLock.isHeld()) multicastLock.release();
         if (processBoundToWifi && connectivityManager != null) connectivityManager.bindProcessToNetwork(null);

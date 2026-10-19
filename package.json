@@ -1,7 +1,7 @@
 {
   "name": "fursan-lan",
-  "version": "0.4.1",
-  "description": "فرسان لان — مراسلة عربية مباشرة بين الأقران على الشبكة المحلية",
+  "version": "0.5.0",
+  "description": "فرسان لان — مراسلة P2P عربية عبر Wi-Fi وBluetooth Classic",
   "main": "src/main.js",
   "author": "فريق فرسان لان",
   "license": "MIT",
@@ -13,12 +13,14 @@
   },
   "dependencies": {
     "express": "^4.21.2",
+    "serialport": "^13.0.0",
     "socket.io": "^4.8.1",
     "socket.io-client": "^4.8.1"
   },
   "devDependencies": {
     "electron": "^44.7.2",
-    "electron-builder": "^26.15.3"
+    "electron-builder": "^26.15.3",
+    "fake-indexeddb": "^6.2.6"
   },
   "build": {
     "appId": "com.fursan.lan",

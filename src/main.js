@@ -6,6 +6,7 @@ const http = require('node:http');
 const express = require('express');
 const { Server } = require('socket.io');
 const { RoomStore } = require('./room-store');
+const { BluetoothHost } = require('./bluetooth-host');
 
 const DISCOVERY_PORT = 43820;
 const PEER_PORT = 43821;
@@ -13,7 +14,9 @@ const PROTOCOL = 'fursan-p2p-v1';
 const MAX_MESSAGE_CHARS = 5000;
 let win, discovery, peerServer, io, roomStore, peerStarted = false, peerStarting = null, activeCall = null;
 let localClientId = null, localProfile = null;
+let bluetoothHost = null;
 const peers = new Map();
+const bluetoothPeerIds = new Set();
 
 const hasInstanceLock = app.requestSingleInstanceLock();
 if (!hasInstanceLock) app.quit();
@@ -59,9 +62,18 @@ function deliverToConnectedAndroid(event, message) {
   const localSocket = socketForClient(localClientId);
   for (const clientId of roomStore.messageRecipients(message)) {
     const socketId = socketForClient(clientId);
+    if (event === 'file-message' && bluetoothPeerIds.has(clientId)) continue;
     if (!socketId || socketId === localSocket || peers.get(socketId)?.platform !== 'android') continue;
     io.to(socketId).emit(event, message);
   }
+}
+function deliverToConnectedBluetooth(event, message) {
+  if (!io || !roomStore || message.senderClientId !== localClientId) return;
+  const profile = bluetoothHost?.remoteProfile;
+  if (!profile || profile.platform === 'android') return;
+  if (!roomStore.messageRecipients(message).includes(profile.clientId)) return;
+  const socketId = socketForClient(profile.clientId);
+  if (socketId && bluetoothPeerIds.has(profile.clientId)) io.to(socketId).emit(event, message);
 }
 function publishMessage(message) {
   // A local Windows sender may deliver directly to its already-connected Android
@@ -69,6 +81,7 @@ function publishMessage(message) {
   const localSocket = localClientId ? socketForClient(localClientId) : null;
   if (localSocket) io.to(localSocket).emit('chat-message', message);
   deliverToConnectedAndroid('chat-message', message);
+  deliverToConnectedBluetooth('chat-message', message);
 }
 function withinRate(socket, key, limit) {
   const now = Date.now();
@@ -94,16 +107,21 @@ function createPeerEndpoint() {
   peerServer = http.createServer(web);
   io = new Server(peerServer, { maxHttpBufferSize: 15 * 1024 * 1024, cors: { origin: '*' }, connectTimeout: 10000 });
   io.on('connection', socket => {
-    socket.on('join', (profile = {}) => {
-      if (socket.data.user) return;
+    socket.on('join', (profile = {}, done) => {
+      const acknowledge = typeof done === 'function' ? done : () => {};
+      if (socket.data.user) { acknowledge({ ok: false, error: 'هذا الاتصال منضم بالفعل.' }); return; }
       const name = String(profile.name || 'مستخدم').replace(/[\r\n\0]/g, ' ').trim().slice(0, 40) || 'مستخدم';
       const clientId = String(profile.clientId || '').slice(0, 80);
-      if (!/^[a-zA-Z0-9_-]{16,80}$/.test(clientId)) return socket.emit('notice', 'تعذرت قراءة هوية هذا الجهاز؛ أعد تشغيل التطبيق.');
+      if (!/^[a-zA-Z0-9_-]{16,80}$/.test(clientId)) { socket.emit('notice', 'تعذرت قراءة هوية هذا الجهاز؛ أعد تشغيل التطبيق.'); acknowledge({ ok: false, error: 'هوية الجهاز غير صالحة.' }); return; }
       const platform = profile.platform === 'android' ? 'android' : 'windows';
       const user = { id: socket.id, clientId, name, platform, joinedAt: Date.now() };
       const remoteAddress = String(socket.handshake.address || '');
       const trustedLocal = profile.local === true && ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(remoteAddress);
-      if (trustedLocal) { localClientId = clientId; localProfile = { clientId, name, platform: 'windows' }; }
+      if (trustedLocal) {
+        localClientId = clientId;
+        localProfile = { clientId, name, platform: 'windows' };
+        bluetoothHost?.setLocalProfile(localProfile);
+      }
       peers.set(socket.id, user);
       socket.data.user = user;
       roomStore.rememberContact(user);
@@ -122,6 +140,7 @@ function createPeerEndpoint() {
       }
       broadcastMembers();
       io.emit('system-message', { text: `${user.name} اتصل بنظير محلي`, time: Date.now() });
+      acknowledge({ ok: true, clientId });
     });
     socket.on('chat', raw => {
       if (!socket.data.user) return;
@@ -286,5 +305,39 @@ app.whenReady().then(() => {
 });
 ipcMain.handle('start-peer', () => startPeer());
 ipcMain.handle('lan-info', () => ({ addresses: lanAddresses(), hostname: os.hostname(), port: PEER_PORT }));
-app.on('before-quit', () => { try { discovery?.close(); io?.close(); peerServer?.close(); } catch (_) {} });
+function getBluetoothHost() {
+  if (bluetoothHost) return bluetoothHost;
+  const { SerialPort } = require('serialport');
+  const { io: createClient } = require('socket.io-client');
+  bluetoothHost = new BluetoothHost({ SerialPort, createClient, peerPort: PEER_PORT });
+  bluetoothHost.on('event', event => {
+    if (event.type === 'peer-connected') bluetoothPeerIds.add(event.clientId);
+    if (event.type === 'peer-disconnected' || event.type === 'disconnected') bluetoothPeerIds.clear();
+    win?.webContents.send('bluetooth-event', event);
+  });
+  return bluetoothHost;
+}
+ipcMain.handle('bluetooth-list-ports', async () => {
+  if (process.platform !== 'win32') return [];
+  return getBluetoothHost().listPorts();
+});
+ipcMain.handle('bluetooth-connect-port', async (_event, port) => {
+  if (process.platform !== 'win32') throw new Error('منافذ Bluetooth SPP/COM متاحة في نسخة Windows فقط.');
+  const started = await startPeer();
+  if (!started.ok) throw new Error(started.error || 'تعذر بدء نقطة النظير المحلية.');
+  return getBluetoothHost().connect(port);
+});
+ipcMain.handle('bluetooth-send-frame', async (_event, frame) => {
+  if (process.platform !== 'win32') throw new Error('نقل Bluetooth عبر COM متاح في نسخة Windows فقط.');
+  return getBluetoothHost().sendFrame(frame);
+});
+ipcMain.handle('bluetooth-disconnect', async () => {
+  bluetoothPeerIds.clear();
+  if (bluetoothHost) await bluetoothHost.close();
+  return { ok: true };
+});
+app.on('before-quit', () => {
+  try { discovery?.close(); io?.close(); peerServer?.close(); } catch (_) {}
+  bluetoothHost?.close().catch(() => {});
+});
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });

@@ -10,8 +10,8 @@ android {
         applicationId 'com.fursan.lan.android'
         minSdk 26
         targetSdk 35
-        versionCode 1
-        versionName '0.1.0'
+        versionCode 2
+        versionName '0.2.0'
         testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
     }
 
@@ -36,6 +36,9 @@ tasks.register('prepareFursanWebAssets') {
     inputs.files(
         new File(repoRoot, 'src/index.html'),
         new File(repoRoot, 'src/style.css'),
+        new File(repoRoot, 'src/bluetooth.css'),
+        new File(repoRoot, 'src/bluetooth-files.js'),
+        new File(repoRoot, 'src/bluetooth-client.js'),
         new File(repoRoot, 'src/renderer.js'),
         new File(repoRoot, 'node_modules/socket.io-client/dist/socket.io.js')
     )
@@ -44,6 +47,9 @@ tasks.register('prepareFursanWebAssets') {
         File output = webAssetOutput.get().asFile
         output.mkdirs()
         new File(output, 'style.css').bytes = new File(repoRoot, 'src/style.css').bytes
+        new File(output, 'bluetooth.css').bytes = new File(repoRoot, 'src/bluetooth.css').bytes
+        new File(output, 'bluetooth-files.js').bytes = new File(repoRoot, 'src/bluetooth-files.js').bytes
+        new File(output, 'bluetooth-client.js').bytes = new File(repoRoot, 'src/bluetooth-client.js').bytes
         new File(output, 'renderer.js').bytes = new File(repoRoot, 'src/renderer.js').bytes
         new File(output, 'socket.io.js').bytes = new File(repoRoot, 'node_modules/socket.io-client/dist/socket.io.js').bytes
         String html = new File(repoRoot, 'src/index.html').getText('UTF-8')

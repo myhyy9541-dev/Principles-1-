@@ -7,6 +7,7 @@
   <meta name="description" content="فرسان لان — مراسلة مباشرة بين الأجهزة على الشبكة المحلية.">
   <title>فرسان لان — مراسلة P2P</title>
   <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="bluetooth.css">
 </head>
 <body>
   <div class="app-shell">
@@ -39,6 +40,7 @@
         <div class="top-actions">
           <button id="searchBtn" class="icon-btn" type="button" title="بحث في السجل">⌕ <span>بحث</span></button>
           <button id="exportBtn" class="icon-btn" type="button" title="تصدير السجل">⇩ <span>تصدير</span></button>
+          <button id="bluetoothBtn" class="icon-btn" type="button" title="اتصال مباشر عبر Bluetooth">BT <span>بلوتوث</span></button>
           <button id="voiceBtn" class="icon-btn" type="button" title="بدء اتصال صوتي مباشر">☎ <span>صوت</span></button>
           <button id="videoBtn" class="icon-btn primary" type="button" title="بدء اتصال مرئي مباشر">▣ <span>فيديو</span></button>
         </div>
@@ -56,6 +58,14 @@
         <button id="newGroupMobileBtn" class="call-control mobile-only" type="button">＋ مجموعة</button>
       </div>
       <div id="peerBanner" class="banner hidden"><b>نقطة هذا الجهاز جاهزة</b><span id="peerAddress"></span></div>
+      <section id="bluetoothPanel" class="bluetooth-panel hidden" aria-label="إعداد اتصال Bluetooth">
+        <div class="bluetooth-copy"><b>اتصال Bluetooth Classic مباشر</b><span id="bluetoothHelp">اقرن الجهازين من إعدادات النظام أولاً؛ الملفات والرسائل تنتقل عبر RFCOMM.</span></div>
+        <select id="bluetoothDeviceList" aria-label="الأجهزة المقترنة أو منافذ COM"><option value="">حدّث قائمة الأجهزة المقترنة</option></select>
+        <button id="bluetoothRefresh" class="call-control" type="button">تحديث</button>
+        <button id="bluetoothConnect" class="call-control" type="button">اتصال</button>
+        <button id="bluetoothDisconnect" class="call-control" type="button">قطع</button>
+        <span id="bluetoothState" role="status">غير متصل</span>
+      </section>
 
       <section id="messages" class="messages" aria-live="polite" aria-label="الرسائل">
         <div class="welcome">
@@ -95,6 +105,8 @@
   </div>
   <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
   <script src="../node_modules/socket.io-client/dist/socket.io.js"></script>
+  <script src="bluetooth-files.js"></script>
+  <script src="bluetooth-client.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>
