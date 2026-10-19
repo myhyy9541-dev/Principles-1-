@@ -120,7 +120,7 @@ public final class WaselRuntime implements AutoCloseable {
 
     private JsonObject settingsView() {
         JsonObject out=new JsonObject(); out.add("settings",SettingsStore.toJson(settings)); out.add("adapters",GSON.toJsonTree(SettingsStore.adapters()));
-        out.addProperty("hostname",safeHost()); out.addProperty("appVersion","0.5.2"); out.addProperty("platform",System.getProperty("os.name")); return out;
+        out.addProperty("hostname",safeHost()); out.addProperty("appVersion","0.6.0"); out.addProperty("platform",System.getProperty("os.name")); return out;
     }
 
     private synchronized void handleStartPeer(HttpExchange exchange) throws IOException {
@@ -194,5 +194,5 @@ public final class WaselRuntime implements AutoCloseable {
     private static void json(HttpExchange exchange,int status,JsonElement data)throws IOException{byte[] body=GSON.toJson(data).getBytes(StandardCharsets.UTF_8);exchange.getResponseHeaders().set("Content-Type","application/json; charset=utf-8");exchange.getResponseHeaders().set("X-Content-Type-Options","nosniff");exchange.getResponseHeaders().set("Cache-Control","no-store");exchange.sendResponseHeaders(status,body.length);try(var output=exchange.getResponseBody()){output.write(body);}}
     private static void reply(HttpExchange exchange,int status,String text)throws IOException{json(exchange,status,error(text));}
 
-    @Override public synchronized void close(){if(!closed.compareAndSet(false,true))return;discovery.setHosting(false);discovery.setPeerProfile("","",false);if(roomServer!=null)roomServer.close();if(peerServer!=null)peerServer.close();if(fileServer!=null)fileServer.close();discovery.close();if(uiServer!=null)uiServer.stop(1);}
+    @Override public synchronized void close(){if(!closed.compareAndSet(false,true))return;discovery.setHosting(false);discovery.setPeerProfile("","",false);if(roomServer!=null)roomServer.close();if(peerServer!=null)peerServer.close();if(fileServer!=null)fileServer.close();discovery.close();if(uiServer!=null)uiServer.stop(1);store.close();}
 }

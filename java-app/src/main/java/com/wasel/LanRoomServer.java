@@ -42,6 +42,8 @@ public final class LanRoomServer implements AutoCloseable {
         SocketIOServer next = new SocketIOServer(config);
         next.addConnectListener(this::onConnect); next.addDisconnectListener(this::onDisconnect);
         next.addEventListener("join", Map.class, (client, data, ack) -> join(client, json(data)));
+        next.addEventListener("history-before", Map.class, (client, data, ack) -> historyBefore(client, json(data)));
+        next.addEventListener("history-chat", Map.class, (client, data, ack) -> historyChat(client, json(data)));
         next.addEventListener("chat", Map.class, (client, data, ack) -> chat(client, json(data)));
         next.addEventListener("broadcast", Map.class, (client, data, ack) -> broadcast(client, json(data)));
         next.addEventListener("create-group", Map.class, (client, data, ack) -> createGroup(client, json(data)));
@@ -65,19 +67,45 @@ public final class LanRoomServer implements AutoCloseable {
         peers.put(client.getSessionId(), user);
         try { store.rememberContact(clientId, name); }
         catch (IOException ex) { send(client, "notice", "تعذر حفظ جهة الاتصال: " + ex.getMessage()); }
-        send(client, "identity", obj("clientId", clientId)); send(client, "history", store.historyFor(clientId));
+        send(client, "identity", obj("clientId", clientId)); send(client, "history", store.historyPageFor(clientId, Long.MAX_VALUE, "", RoomStore.HISTORY_PAGE_SIZE));
         send(client, "groups", store.visibleGroups(clientId)); send(client, "contacts", contactList());
-        for (JsonObject message : store.offlineFor(clientId)) {
-            try {
-                store.markDelivered(text(message, "id", ""), clientId); send(client, "chat-message", message);
-                SocketIOClient from = socketForClient(text(message, "senderClientId", ""));
-                if (from != null) send(from, "message-receipt", receipt(text(message, "id", ""), "delivered", clientId));
-            } catch (IOException ex) { send(client, "notice", "تعذر تحديث إيصال الرسالة: " + ex.getMessage()); }
-        }
         broadcastContacts(); broadcastMembers();
         JsonObject system = new JsonObject(); system.addProperty("text", name + " انضم إلى الغرفة"); system.addProperty("time", System.currentTimeMillis()); broadcast("system-message", system);
         JsonObject call = activeCall;
         if (call != null) { JsonObject packet = new JsonObject(); packet.addProperty("from", text(call, "owner", "")); packet.add("description", obj("type", "call-start", "mode", text(call, "mode", "audio"))); send(client, "signal", packet); }
+    }
+
+    private void historyBefore(SocketIOClient client, JsonObject raw) {
+        JsonObject user = peers.get(client.getSessionId()); if (user == null) return;
+        try {
+            long beforeTime = raw.has("beforeTime") && raw.get("beforeTime").isJsonPrimitive() ? raw.get("beforeTime").getAsLong() : Long.MAX_VALUE;
+            String beforeId = text(raw, "beforeId", ""), chat = text(raw, "chat", "general");
+            JsonArray page = store.historyPageForChat(text(user, "clientId", ""), chat, beforeTime, beforeId, RoomStore.HISTORY_PAGE_SIZE);
+            send(client, "history-older", historyPacket(chat, page)); notifyPageDelivered(page, text(user, "clientId", ""));
+        } catch (Exception ex) { send(client, "notice", "تعذر تحميل الرسائل الأقدم."); }
+    }
+
+    private void historyChat(SocketIOClient client, JsonObject raw) {
+        JsonObject user = peers.get(client.getSessionId()); if (user == null) return;
+        try {
+            String chat = text(raw, "chat", "general");
+            JsonArray page = store.historyPageForChat(text(user, "clientId", ""), chat, Long.MAX_VALUE, "", RoomStore.HISTORY_PAGE_SIZE);
+            send(client, "history-chat-page", historyPacket(chat, page)); notifyPageDelivered(page, text(user, "clientId", ""));
+        } catch (Exception ex) { send(client, "notice", "تعذر تحميل سجل المحادثة."); }
+    }
+
+    private static JsonObject historyPacket(String chat, JsonArray messages) {
+        JsonObject packet = new JsonObject(); packet.addProperty("chat", chat); packet.add("messages", messages); return packet;
+    }
+
+    private void notifyPageDelivered(JsonArray page, String clientId) throws IOException {
+        List<String> ids = new ArrayList<>(); for (JsonElement element : page) if (element.isJsonObject()) ids.add(text(element.getAsJsonObject(), "id", ""));
+        Map<String, List<String>> bySender = new java.util.HashMap<>();
+        for (JsonObject message : store.markDeliveredBatch(ids, clientId)) bySender.computeIfAbsent(text(message, "senderClientId", ""), ignored -> new ArrayList<>()).add(text(message, "id", ""));
+        for (Map.Entry<String, List<String>> entry : bySender.entrySet()) {
+            SocketIOClient from = socketForClient(entry.getKey());
+            if (from != null) send(from, "message-receipt", receipt(entry.getValue(), "delivered", clientId));
+        }
     }
 
     private void chat(SocketIOClient client, JsonObject raw) {
@@ -137,8 +165,20 @@ public final class LanRoomServer implements AutoCloseable {
     private void markRead(SocketIOClient client, JsonObject raw) {
         JsonObject user = peers.get(client.getSessionId()); if (user == null) return;
         try {
-            JsonObject message = store.markRead(text(raw, "id", ""), text(user, "clientId", "")); if (message == null) return;
-            SocketIOClient from = socketForClient(text(message, "senderClientId", "")); if (from != null) send(from, "message-receipt", receipt(text(message, "id", ""), "read", text(user, "clientId", "")));
+            List<String> ids = new ArrayList<>();
+            if (raw.has("ids") && raw.get("ids").isJsonArray()) {
+                for (JsonElement value : raw.getAsJsonArray("ids")) if (value.isJsonPrimitive() && value.getAsString().matches("(?i)[0-9a-f-]{36}")) ids.add(value.getAsString());
+            } else if (text(raw, "id", "").matches("(?i)[0-9a-f-]{36}")) ids.add(text(raw, "id", ""));
+            if (ids.isEmpty() || !withinRate(client, "mark-read", 120)) return;
+            Map<String, List<String>> bySender = new java.util.HashMap<>();
+            for (JsonObject message : store.markReadBatch(ids, text(user, "clientId", ""))) {
+                String senderId = text(message, "senderClientId", "");
+                bySender.computeIfAbsent(senderId, ignored -> new ArrayList<>()).add(text(message, "id", ""));
+            }
+            for (Map.Entry<String, List<String>> entry : bySender.entrySet()) {
+                SocketIOClient from = socketForClient(entry.getKey());
+                if (from != null) send(from, "message-receipt", receipt(entry.getValue(), "read", text(user, "clientId", "")));
+            }
         } catch (IOException ex) { send(client, "notice", "تعذر حفظ إيصال القراءة."); }
     }
 
@@ -259,6 +299,7 @@ public final class LanRoomServer implements AutoCloseable {
     }
     private static Map<String,Object> map(JsonObject value) { return GSON.fromJson(value,Map.class); }
     private static JsonObject receipt(String id,String kind,String clientId) { JsonObject out=new JsonObject(); out.addProperty("id",id); out.addProperty("kind",kind); out.addProperty("clientId",clientId); return out; }
+    private static JsonObject receipt(List<String> ids,String kind,String clientId) { JsonObject out=new JsonObject(); JsonArray values=new JsonArray(); ids.forEach(values::add); out.add("ids",values); out.addProperty("kind",kind); out.addProperty("clientId",clientId); return out; }
     private static JsonObject obj(String... pairs) { JsonObject out=new JsonObject(); for(int i=0;i+1<pairs.length;i+=2) out.addProperty(pairs[i],pairs[i+1]); return out; }
     private static String text(JsonObject object,String key,String fallback) { return LanDiscovery.text(object,key,fallback); }
     private static String cleanName(String value) { String name=value==null?"":value.replaceAll("[\\r\\n\\u0000]"," ").strip(); return name.isEmpty()?"مستخدم":name.substring(0,Math.min(40,name.length())); }

@@ -3,7 +3,7 @@
   <modelVersion>4.0.0</modelVersion>
   <groupId>com.wasel</groupId>
   <artifactId>wasel-java</artifactId>
-  <version>0.5.2</version>
+  <version>0.6.0</version>
   <name>Wasel LAN Java</name>
   <properties>
     <maven.compiler.release>21</maven.compiler.release>
@@ -39,6 +39,7 @@
     <dependency><groupId>com.corundumstudio.socketio</groupId><artifactId>netty-socketio</artifactId><version>${socketio.version}</version></dependency>
     <dependency><groupId>me.friwi</groupId><artifactId>jcefmaven</artifactId><version>${jcef.version}</version></dependency>
     <dependency><groupId>com.google.code.gson</groupId><artifactId>gson</artifactId><version>2.11.0</version></dependency>
+    <dependency><groupId>org.xerial</groupId><artifactId>sqlite-jdbc</artifactId><version>3.49.1.0</version></dependency>
     <dependency><groupId>org.slf4j</groupId><artifactId>slf4j-simple</artifactId><version>${slf4j.version}</version></dependency>
     <dependency><groupId>org.junit.jupiter</groupId><artifactId>junit-jupiter</artifactId><version>5.11.4</version><scope>test</scope></dependency>
   </dependencies>

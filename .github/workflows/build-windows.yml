@@ -41,7 +41,7 @@ jobs:
         working-directory: java-app
         run: |
           New-Item -ItemType Directory -Force -Path target\installer-input | Out-Null
-          Copy-Item target\wasel-java-0.5.2.jar target\installer-input\
+          Copy-Item target\wasel-java-0.6.0.jar target\installer-input\
           Copy-Item target\app-libs\*.jar target\installer-input\
           $count = (Get-ChildItem target\installer-input -Filter *.jar).Count
           if ($count -lt 10) { throw "Dependency bundle is incomplete: only $count jars were staged." }
@@ -50,19 +50,19 @@ jobs:
         shell: pwsh
         working-directory: java-app
         run: |
-          jpackage --type app-image --name Wasel-LAN --input target\installer-input --dest target\dist --main-jar wasel-java-0.5.2.jar --main-class com.wasel.WaselApplication --app-version 0.5.2 --vendor "Wasel" --description "Arabic offline LAN messaging" --icon src\main\resources\windows\wasel.ico
-          Compress-Archive -Path target\dist\Wasel-LAN\* -DestinationPath target\dist\Wasel-LAN-0.5.2-portable.zip -CompressionLevel Optimal
+          jpackage --type app-image --name Wasel-LAN --input target\installer-input --dest target\dist --main-jar wasel-java-0.6.0.jar --main-class com.wasel.WaselApplication --app-version 0.6.0 --vendor "Wasel" --description "Arabic offline LAN messaging" --icon src\main\resources\windows\wasel.ico
+          Compress-Archive -Path target\dist\Wasel-LAN\* -DestinationPath target\dist\Wasel-LAN-0.6.0-portable.zip -CompressionLevel Optimal
       - name: Create per-user Windows installer
         shell: pwsh
         working-directory: java-app
         run: |
-          jpackage --type exe --name Wasel-LAN --input target\installer-input --dest target\dist --main-jar wasel-java-0.5.2.jar --main-class com.wasel.WaselApplication --app-version 0.5.2 --vendor "Wasel" --description "Arabic offline LAN messaging" --icon src\main\resources\windows\wasel.ico --win-per-user-install --win-dir-chooser --win-menu --win-shortcut
-          if (-not (Test-Path target\dist\Wasel-LAN-0.5.2.exe)) { throw "Windows installer EXE was not produced." }
+          jpackage --type exe --name Wasel-LAN --input target\installer-input --dest target\dist --main-jar wasel-java-0.6.0.jar --main-class com.wasel.WaselApplication --app-version 0.6.0 --vendor "Wasel" --description "Arabic offline LAN messaging" --icon src\main\resources\windows\wasel.ico --win-per-user-install --win-dir-chooser --win-menu --win-shortcut
+          if (-not (Test-Path target\dist\Wasel-LAN-0.6.0.exe)) { throw "Windows installer EXE was not produced." }
       - uses: actions/upload-artifact@v7
         with:
-          name: wasel-java-windows-0.5.2
+          name: wasel-java-windows-0.6.0
           path: |
-            java-app/target/dist/Wasel-LAN-0.5.2.exe
-            java-app/target/dist/Wasel-LAN-0.5.2-portable.zip
+            java-app/target/dist/Wasel-LAN-0.6.0.exe
+            java-app/target/dist/Wasel-LAN-0.6.0-portable.zip
           if-no-files-found: error
           retention-days: 30

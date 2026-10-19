@@ -1,6 +1,7 @@
 const $ = id => document.getElementById(id);
 const escapeHtml = value => String(value).replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
 const MAX_FILE_BYTES = 1024 * 1024 * 1024, UPLOAD_CHUNK_BYTES = 1024 * 1024;
+const HISTORY_PAGE_SIZE = 200, IMAGE_PREVIEW_MAX_BYTES = 8 * 1024 * 1024;
 let myName = localStorage.getItem('wasel-name') || 'مستخدم';
 let clientId = localStorage.getItem('wasel-client-id');
 if (!clientId) { clientId = `w${crypto.randomUUID().replaceAll('-', '')}`; localStorage.setItem('wasel-client-id', clientId); }
@@ -11,8 +12,10 @@ const peerSockets = new Map(), discoveredPeers = new Map(), signalSockets = new 
 if (!['direct', 'host'].includes(connectionMode)) connectionMode = 'direct';
 let appSettings = { networkInterface: 'auto', discoveryIntervalMs: 1800, autoConnect: true, openAtLogin: false, theme: 'light' };
 let discoveredRoom = null, networkSettingsView = null;
-let contacts = [], groups = [], currentChat = 'general', allMessages = (() => { try { const saved = JSON.parse(localStorage.getItem('wasel-p2p-history') || '[]'); return Array.isArray(saved) ? saved.slice(-1000) : []; } catch (_) { return []; } })(), searchTerm = '';
-const readSent = new Set(), messageSockets = new Map();
+let contacts = [], groups = [], currentChat = 'general', allMessages = (() => { try { const saved = JSON.parse(localStorage.getItem('wasel-p2p-history') || '[]'); return Array.isArray(saved) ? saved.slice(-500) : []; } catch (_) { return []; } })(), searchTerm = '';
+const messageById = new Map(allMessages.filter(message => message?.id).map(message => [message.id, message]));
+const messageSockets = new Map(), historyCursors = new Map(), requestedChatHistory = new WeakMap();
+let historyViewEnd = null, olderHistoryRequest = null, historyCacheTimer = null;
 let acceptingCall = false, startingCall = false, callTransport = null, callPeerId = null;
 const peers = new Map();
 const deferredDescriptions = new Map();
@@ -31,15 +34,13 @@ function fileUrl(id, message = {}) {
   const port = message.filePort || currentHost?.filePort || 43822;
   return address ? `http://${address}:${port}/api/files/${encodeURIComponent(id)}` : '#';
 }
-function addMessage(message) {
-  const box = $('messages');
-  box.querySelector('.welcome')?.remove();
+function addMessage(message, target = $('messages')) {
+  if (target === $('messages')) target.querySelector('.welcome')?.remove();
   if (message.type === 'system') {
     const line = document.createElement('div');
     line.className = 'system-message';
     line.textContent = message.text;
-    box.append(line);
-    box.scrollTop = box.scrollHeight;
+    target.append(line);
     return;
   }
   const mine = message.senderClientId ? message.senderClientId === clientId : message.senderId === window._socketId;
@@ -49,14 +50,14 @@ function addMessage(message) {
   let content = escapeHtml(message.text || '');
   if (message.type === 'file') {
     const url = fileUrl(message.id, message);
-    const preview = /^image\/(png|jpeg|gif|webp|avif)$/.test(String(message.mime || ''))
+    const preview = Number(message.size || 0) <= IMAGE_PREVIEW_MAX_BYTES && /^image\/(png|jpeg|gif|webp|avif)$/.test(String(message.mime || ''))
       ? `<img class="image-preview" src="${url}?preview=1" alt="${escapeHtml(message.name)}" loading="lazy">` : '';
     content = `<a class="file-card" download="${escapeHtml(message.name)}" href="${url}"><span class="file-icon">▤</span><span class="file-label">${escapeHtml(message.name)}<small>ملف مشترك · ${escapeHtml(message.user)} · ${formatSize(message.size)}</small></span><span>تنزيل</span></a>${preview}`;
   }
   const status = mine && message.channel !== 'general' ? `<span class="delivery-state">${(message.readBy || []).length ? '✓✓ تمت القراءة' : (message.deliveredTo || []).length ? '✓ تم التسليم' : '◷ قيد التسليم'}</span>` : '';
   row.innerHTML = `<div class="msg-avatar">${initial}</div><div class="bubble-wrap"><div class="msg-meta"><b>${escapeHtml(message.user || 'النظام')}</b><span class="msg-time">${formatTime(message.time)}</span>${status}</div><div class="bubble">${content}</div></div>`;
-  box.append(row);
-  box.scrollTop = box.scrollHeight;
+  row.dataset.messageId = message.id || '';
+  target.append(row);
 }
 function messageBelongs(message) {
   if (message.type === 'system') return false;
@@ -67,21 +68,157 @@ function messageBelongs(message) {
   }
   return currentChat.startsWith('group:') && message.groupId === currentChat.slice(6);
 }
+function persistHistoryCache() {
+  if (connectionMode !== 'direct' || historyCacheTimer) return;
+  historyCacheTimer = setTimeout(() => {
+    historyCacheTimer = null;
+    try { localStorage.setItem('wasel-p2p-history', JSON.stringify(allMessages.slice(-500))); } catch (_) { }
+  }, 800);
+}
 function mergeMessages(messages) {
-  const byId = new Map(allMessages.map(message => [message.id, message]));
-  for (const message of messages || []) if (message?.id) byId.set(message.id, { ...byId.get(message.id), ...message });
-  allMessages = [...byId.values()].sort((a, b) => (a.time || 0) - (b.time || 0)).slice(-5000);
-  if (connectionMode === 'direct') {
-    try { localStorage.setItem('wasel-p2p-history', JSON.stringify(allMessages.slice(-1000))); } catch (_) { }
+  const fresh = [];
+  for (const message of messages || []) {
+    if (!message?.id) continue;
+    const old = messageById.get(message.id);
+    if (old) Object.assign(old, message);
+    else { messageById.set(message.id, message); fresh.push(message); }
   }
+  const compare = (a, b) => (a.time || 0) - (b.time || 0) || String(a.id).localeCompare(String(b.id));
+  if (fresh.length) {
+    fresh.sort(compare);
+    if (!allMessages.length || compare(allMessages[allMessages.length - 1], fresh[0]) <= 0) allMessages.push(...fresh);
+    else if (compare(fresh[fresh.length - 1], allMessages[0]) < 0) allMessages = fresh.concat(allMessages);
+    else {
+      const merged = []; let i = 0, j = 0;
+      while (i < allMessages.length && j < fresh.length) merged.push(compare(allMessages[i], fresh[j]) <= 0 ? allMessages[i++] : fresh[j++]);
+      allMessages = merged.concat(allMessages.slice(i), fresh.slice(j));
+    }
+  }
+  persistHistoryCache();
+  return fresh.length;
+}
+function visibleMessages(chat = currentChat) {
+  const query = searchTerm.toLocaleLowerCase();
+  return allMessages.filter(message => messageBelongsFor(message, chat) && (!query || String(message.text || message.name || '').toLocaleLowerCase().includes(query)));
+}
+function messageBelongsFor(message, chat) {
+  if (message.type === 'system') return false;
+  if (chat === 'general') return message.channel === 'general' || message.channel === 'broadcast';
+  if (chat.startsWith('user:')) {
+    const id = chat.slice(5);
+    return message.channel === 'direct' && ((message.senderClientId === clientId && message.toId === id) || (message.senderClientId === id && message.toId === clientId));
+  }
+  return chat.startsWith('group:') && message.groupId === chat.slice(6);
+}
+function historyCursor(source, chat) {
+  let byChat = historyCursors.get(source);
+  if (!byChat) { byChat = new Map(); historyCursors.set(source, byChat); }
+  let state = byChat.get(chat);
+  if (!state) { state = { beforeTime: Number.MAX_SAFE_INTEGER, beforeId: '\uffff', hasMore: true, loading: false }; byChat.set(chat, state); }
+  return state;
+}
+function setHistoryCursor(source, chat, messages) {
+  const cursor = historyCursor(source, chat);
+  const first = messages?.[0];
+  cursor.loading = false;
+  cursor.hasMore = (messages || []).length >= HISTORY_PAGE_SIZE;
+  if (first) { cursor.beforeTime = Number(first.time) || 0; cursor.beforeId = String(first.id || ''); }
+  else cursor.hasMore = false;
+}
+function routeHistoryMessages(messages, source) {
+  const owner = [...peerSockets.values()].find(item => item.socket === source)?.info;
+  return (messages || []).map(message => {
+    if (message.id) messageSockets.set(message.id, source);
+    return message.type === 'file' ? { ...message, fileHost: owner?.address || (source === localPeerSocket ? '127.0.0.1' : currentHost?.address || '127.0.0.1'), filePort: owner?.filePort || currentHost?.filePort || 43822 } : message;
+  });
+}
+function historySources() {
+  if (connectionMode !== 'direct') return socket?.connected ? [socket] : [];
+  const sources = [];
+  if (localPeerSocket?.connected) sources.push(localPeerSocket);
+  for (const item of peerSockets.values()) if (item.socket?.connected) sources.push(item.socket);
+  return [...new Set(sources)];
+}
+function requestChatHistory(chat) {
+  for (const source of historySources()) requestSourceChatHistory(source, chat);
+}
+function requestSourceChatHistory(source, chat) {
+  let requested = requestedChatHistory.get(source);
+  if (!requested) { requested = new Set(); requestedChatHistory.set(source, requested); }
+  if (requested.has(chat)) return;
+  requested.add(chat); source.emit('history-chat', { chat });
+}
+function requestOlderHistory() {
+  if (olderHistoryRequest) return;
+  const sources = historySources().filter(source => {
+    const cursor = historyCursor(source, currentChat);
+    return cursor.hasMore && !cursor.loading;
+  });
+  if (!sources.length) { toast('تم الوصول إلى أقدم الرسائل المحمّلة حالياً.'); return; }
+  const beforeCount = visibleMessages().length;
+  const request = olderHistoryRequest = { chat: currentChat, pending: new Set(sources), beforeCount, added: 0 };
+  for (const source of sources) {
+    const cursor = historyCursor(source, currentChat); cursor.loading = true;
+    source.emit('history-before', { chat: currentChat, beforeTime: cursor.beforeTime, beforeId: cursor.beforeId });
+  }
+  setTimeout(() => {
+    if (olderHistoryRequest !== request) return;
+    for (const source of request.pending) historyCursor(source, request.chat).loading = false;
+    request.pending.clear();
+    finishOlderHistory();
+  }, 10000);
+}
+function finishOlderHistory() {
+  if (!olderHistoryRequest || olderHistoryRequest.pending.size) return;
+  const request = olderHistoryRequest; olderHistoryRequest = null;
+  if (request.chat !== currentChat) return;
+  const nowCount = visibleMessages().length;
+  historyViewEnd = request.beforeCount > 0 ? request.beforeCount : Math.min(nowCount, HISTORY_PAGE_SIZE);
+  renderMessages();
 }
 function renderMessages() {
   const box = $('messages'); box.innerHTML = '';
-  const list = allMessages.filter(message => messageBelongs(message) && (!searchTerm || String(message.text || message.name || '').toLocaleLowerCase().includes(searchTerm.toLocaleLowerCase())));
-  for (const message of list) addMessage(message);
-  if (!list.length) box.innerHTML = '<div class="welcome"><div class="welcome-icon">✦</div><h2>لا توجد رسائل هنا بعد</h2><p>ابدأ المحادثة مع فريقك على الشبكة المحلية.</p></div>';
+  const list = visibleMessages();
+  if (!list.length) {
+    box.innerHTML = '<div class="welcome"><div class="welcome-icon">✦</div><h2>لا توجد رسائل هنا بعد</h2><p>ابدأ المحادثة مع فريقك على الشبكة المحلية.</p></div>';
+    $('searchCount').textContent = searchTerm ? '0 نتيجة' : '';
+    return;
+  }
+  const end = Math.min(historyViewEnd == null ? list.length : historyViewEnd, list.length);
+  const start = Math.max(0, end - HISTORY_PAGE_SIZE);
+  if (start > 0 || historyCursorHasMore()) {
+    const older = document.createElement('button'); older.className = 'history-page-control';
+    older.textContent = start > 0 ? 'عرض الرسائل الأقدم المحمّلة' : (olderHistoryRequest ? 'جارٍ تحميل الرسائل الأقدم…' : 'تحميل رسائل أقدم');
+    older.disabled = Boolean(olderHistoryRequest);
+    older.onclick = () => { if (start > 0) { historyViewEnd = start; renderMessages(); } else requestOlderHistory(); };
+    box.append(older);
+  }
+  const fragment = document.createDocumentFragment();
+  for (const message of list.slice(start, end)) addMessage(message, fragment);
+  box.append(fragment);
+  if (end < list.length) {
+    const newer = document.createElement('button'); newer.className = 'history-page-control'; newer.textContent = 'عرض الرسائل الأحدث';
+    newer.onclick = () => { const next = Math.min(list.length, end + HISTORY_PAGE_SIZE); historyViewEnd = next >= list.length ? null : next; renderMessages(); };
+    box.append(newer);
+  }
   $('searchCount').textContent = searchTerm ? `${list.length} نتيجة` : '';
-  if (connected) for (const message of list) if (message.senderClientId !== clientId && message.channel !== 'general' && !(message.readBy || []).includes(clientId) && !readSent.has(message.id)) { readSent.add(message.id); (messageSockets.get(message.id) || socket)?.emit('mark-read', { id: message.id }); }
+  box.scrollTop = historyViewEnd == null ? box.scrollHeight : box.scrollHeight;
+  markVisibleRead(list.slice(start, end));
+}
+function historyCursorHasMore() {
+  return historySources().some(source => historyCursor(source, currentChat).hasMore);
+}
+function markVisibleRead(messages) {
+  const pending = new Map();
+  for (const message of messages) {
+    if (message.senderClientId === clientId || message.channel === 'general' || message.channel === 'broadcast' || (message.readBy || []).includes(clientId)) continue;
+    const source = messageSockets.get(message.id) || (connectionMode === 'direct' ? null : socket);
+    if (!source?.connected) continue;
+    message.readBy ||= []; message.readBy.push(clientId);
+    if (!pending.has(source)) pending.set(source, []);
+    pending.get(source).push(message.id);
+  }
+  for (const [source, ids] of pending) for (let i = 0; i < ids.length; i += 500) source.emit('mark-read', { ids: ids.slice(i, i + 500) });
 }
 function formatSize(bytes = 0) {
   if (bytes >= 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} غ.ب`;
@@ -122,11 +259,16 @@ function renderChatOptions() {
   document.querySelectorAll('[data-chat]').forEach(button => button.onclick = () => selectChat(button.dataset.chat));
 }
 function selectChat(chat) {
+  if (olderHistoryRequest) {
+    for (const source of olderHistoryRequest.pending) historyCursor(source, olderHistoryRequest.chat).loading = false;
+    olderHistoryRequest.pending.clear(); olderHistoryRequest = null;
+  }
   currentChat = chat; $('chatSelect').value = chat;
+  historyViewEnd = null;
   if (chat === 'general') $('chatTitle').textContent = 'المحادثة العامة';
   else if (chat.startsWith('user:')) $('chatTitle').textContent = `محادثة خاصة · ${contacts.find(item => item.clientId === chat.slice(5))?.name || 'مستخدم'}`;
   else $('chatTitle').textContent = `مجموعة · ${groups.find(item => item.id === chat.slice(6))?.name || 'مجموعة'}`;
-  renderChatOptions(); renderMessages();
+  renderChatOptions(); renderMessages(); requestChatHistory(chat);
 }
 function handleEvent(event, data, source = socket) {
   switch (event) {
@@ -143,35 +285,51 @@ function handleEvent(event, data, source = socket) {
     case 'identity': clientId = data.clientId; localStorage.setItem('wasel-client-id', clientId); break;
     case 'contacts': contacts = data || []; if (connectionMode === 'direct') refreshPeerContacts(); else renderChatOptions(); break;
     case 'groups': groups = data; renderChatOptions(); break;
-    case 'history':
-      if (connectionMode === 'direct') {
-        const fromPeer = [...peerSockets.values()].find(item => item.socket === source)?.info;
-        const history = (data || []).map(message => {
-          if (message.id) messageSockets.set(message.id, source);
-          return message.type === 'file' ? { ...message, fileHost: fromPeer?.address || '127.0.0.1', filePort: fromPeer?.filePort || 43822 } : message;
-        });
-        mergeMessages([...allMessages, ...history]);
-      } else allMessages = data;
-      renderMessages(); break;
+    case 'history': {
+      const history = routeHistoryMessages(data || [], source);
+      setHistoryCursor(source, '__all__', history); mergeMessages(history); renderMessages(); break;
+    }
+    case 'history-chat-page': {
+      const chat = data?.chat || 'general', history = routeHistoryMessages(data?.messages || [], source);
+      setHistoryCursor(source, chat, history); mergeMessages(history);
+      if (chat === currentChat) renderMessages();
+      break;
+    }
+    case 'history-older': {
+      const chat = data?.chat || currentChat, history = routeHistoryMessages(data?.messages || [], source);
+      const cursor = historyCursor(source, chat);
+      if (history.length) setHistoryCursor(source, chat, history); else { cursor.loading = false; cursor.hasMore = false; }
+      const added = mergeMessages(history.filter(message => messageBelongsFor(message, chat)));
+      if (olderHistoryRequest?.chat === chat && olderHistoryRequest.pending.has(source)) {
+        olderHistoryRequest.pending.delete(source); olderHistoryRequest.added += added; finishOlderHistory();
+      } else if (chat === currentChat) renderMessages();
+      break;
+    }
     case 'members': if (connectionMode !== 'direct' || source === localPeerSocket) renderMembers(data); break;
     case 'system-message': addMessage({ type: 'system', text: data.text }); break;
     case 'chat-message': {
       if (data?.id) messageSockets.set(data.id, source);
-      const index = allMessages.findIndex(message => message.id === data.id);
-      if (index >= 0) allMessages[index] = { ...allMessages[index], ...data }; else allMessages.push(data);
-      if (connectionMode === 'direct') mergeMessages(allMessages); renderMessages(); break;
+      mergeMessages([data]);
+      if (messageBelongsFor(data, currentChat) && historyViewEnd == null) renderMessages();
+      break;
     }
     case 'file-message': {
       if (data?.id) messageSockets.set(data.id, source);
       const fromPeer = [...peerSockets.values()].find(item => item.socket === source)?.info;
       const file = { type: 'file', ...data };
-      if (connectionMode === 'direct') { file.fileHost = fromPeer?.address || '127.0.0.1'; file.filePort = fromPeer?.filePort || 43822; mergeMessages([...allMessages, file]); }
-      else if (!allMessages.some(item => item.id === file.id)) allMessages.push(file);
-      renderMessages(); break;
+      if (connectionMode === 'direct') { file.fileHost = fromPeer?.address || (source === localPeerSocket ? '127.0.0.1' : '127.0.0.1'); file.filePort = fromPeer?.filePort || currentHost?.filePort || 43822; }
+      mergeMessages([file]);
+      if (messageBelongsFor(file, currentChat) && historyViewEnd == null) renderMessages();
+      break;
     }
     case 'message-receipt': {
-      const message = allMessages.find(item => item.id === data.id);
-      if (message) { const key = data.kind === 'read' ? 'readBy' : 'deliveredTo'; message[key] ||= []; if (!message[key].includes(data.clientId)) message[key].push(data.clientId); renderMessages(); }
+      const ids = Array.isArray(data.ids) ? data.ids : [data.id]; let changed = false;
+      for (const id of ids) {
+        const message = messageById.get(id); if (!message) continue;
+        const key = data.kind === 'read' ? 'readBy' : 'deliveredTo'; message[key] ||= [];
+        if (!message[key].includes(data.clientId)) { message[key].push(data.clientId); changed = true; }
+      }
+      if (changed) renderMessages();
       break;
     }
     case 'notice': toast(data); break;
@@ -187,9 +345,9 @@ function connect(address, port, filePort = 43822) {
   if (!window.io) { connecting = false; return toast('ملف الاتصال المحلي غير متوفر؛ أعد تثبيت التطبيق.'); }
   socket?.disconnect();
   socket = window.io(`http://${address}:${port}`, { transports: ['websocket', 'polling'], timeout: 5000, reconnection: true });
-  for (const event of ['connect', 'connect_error', 'disconnect', 'identity', 'history', 'members', 'contacts', 'groups', 'system-message', 'chat-message', 'file-message', 'message-receipt', 'signal', 'notice']) {
+  for (const event of ['connect', 'connect_error', 'disconnect', 'identity', 'history', 'history-chat-page', 'history-older', 'members', 'contacts', 'groups', 'system-message', 'chat-message', 'file-message', 'message-receipt', 'signal', 'notice']) {
     socket.on(event, data => {
-      if (event === 'connect') { socket.emit('join', { name: myName, clientId }); handleEvent(event, { id: socket.id }); }
+      if (event === 'connect') { socket.emit('join', { name: myName, clientId }); handleEvent(event, { id: socket.id }); requestSourceChatHistory(socket, currentChat); }
       else handleEvent(event, data);
     });
   }
@@ -197,6 +355,7 @@ function connect(address, port, filePort = 43822) {
 function bindPeerSocket(peerSocket, peer = null, local = false) {
   peerSocket.on('connect', () => {
     peerSocket.emit('join', { name: myName, clientId });
+    requestSourceChatHistory(peerSocket, currentChat);
     if (local) handleEvent('connect', { id: peerSocket.id }, peerSocket);
     else refreshPeerContacts();
   });
@@ -208,7 +367,7 @@ function bindPeerSocket(peerSocket, peer = null, local = false) {
     if (local) handleEvent('connect_error', error, peerSocket);
     else refreshPeerContacts();
   });
-  for (const event of ['identity', 'history', 'members', 'contacts', 'groups', 'system-message', 'chat-message', 'file-message', 'message-receipt', 'signal', 'notice']) {
+  for (const event of ['identity', 'history', 'history-chat-page', 'history-older', 'members', 'contacts', 'groups', 'system-message', 'chat-message', 'file-message', 'message-receipt', 'signal', 'notice']) {
     peerSocket.on(event, data => {
       if (local) { handleEvent(event, data, peerSocket); return; }
       if (event === 'members') {
@@ -219,7 +378,7 @@ function bindPeerSocket(peerSocket, peer = null, local = false) {
           if (connection?.socket === peerSocket) connection.remoteSessionId = ownMember.id;
         }
         refreshPeerMembers();
-      } else if (['history', 'chat-message', 'file-message', 'message-receipt', 'signal', 'notice'].includes(event)) {
+      } else if (['history', 'history-chat-page', 'history-older', 'chat-message', 'file-message', 'message-receipt', 'signal', 'notice'].includes(event)) {
         handleEvent(event, data, peerSocket);
       }
     });

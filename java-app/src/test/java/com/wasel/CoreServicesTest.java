@@ -43,8 +43,11 @@ class CoreServicesTest {
         assertEquals(1, store.historyFor("client_sender_00000001").size());
         assertEquals(1, store.historyFor("client_recipient_0000002").size());
         assertEquals(0, store.historyFor("client_other_000000003").size());
-        store.markDelivered(message.get("id").getAsString(), "client_recipient_0000002"); store.markRead(message.get("id").getAsString(), "client_recipient_0000002");
-        assertEquals(1, store.historyFor("client_sender_00000001").get(0).getAsJsonObject().getAsJsonArray("readBy").size());
+        store.markDeliveredBatch(List.of(message.get("id").getAsString()), "client_recipient_0000002");
+        store.markReadBatch(List.of(message.get("id").getAsString()), "client_recipient_0000002");
+        JsonObject saved = store.historyFor("client_sender_00000001").get(0).getAsJsonObject();
+        assertEquals(1, saved.getAsJsonArray("deliveredTo").size()); assertEquals(1, saved.getAsJsonArray("readBy").size());
+        assertEquals(1, store.historyPageForChat("client_recipient_0000002", "user:client_sender_00000001", Long.MAX_VALUE, "\uffff", 200).size());
     }
 
     @Test void groupsRestrictVisibilityAndFileUploadsEnforceOwner() throws Exception {
@@ -89,5 +92,54 @@ class CoreServicesTest {
         java.nio.file.Files.writeString(root.resolve("history.json"), "[{\"id\":\"old\",\"type\":\"text\",\"text\":\"قديم\"}]");
         RoomStore store = new RoomStore(root);
         assertEquals("general", store.historyFor("any-client").get(0).getAsJsonObject().get("channel").getAsString());
+    }
+
+    @Test void messageHistoryHasNoFiveThousandMessageCapAndLoadsInPages() throws Exception {
+        Path root = temp.resolve("unbounded-room"); RoomStore store = new RoomStore(root);
+        List<JsonObject> batch = new java.util.ArrayList<>();
+        for (int i = 1; i <= 5105; i++) {
+            JsonObject message = new JsonObject(); message.addProperty("id", UUID.randomUUID().toString()); message.addProperty("type", "text");
+            message.addProperty("text", "رسالة " + i); message.addProperty("channel", "general"); message.addProperty("time", i); batch.add(message);
+        }
+        store.addMessages(batch);
+        assertEquals(5105, store.historyFor("reader").size());
+        JsonArray latest = store.historyPageForChat("reader", "general", Long.MAX_VALUE, "\uffff", RoomStore.HISTORY_PAGE_SIZE);
+        assertEquals(RoomStore.HISTORY_PAGE_SIZE, latest.size());
+        long firstTime = latest.get(0).getAsJsonObject().get("time").getAsLong();
+        assertEquals(4906, firstTime);
+        JsonArray older = store.historyPageForChat("reader", "general", firstTime, latest.get(0).getAsJsonObject().get("id").getAsString(), RoomStore.HISTORY_PAGE_SIZE);
+        assertEquals(RoomStore.HISTORY_PAGE_SIZE, older.size());
+        assertTrue(older.get(older.size() - 1).getAsJsonObject().get("time").getAsLong() < firstTime);
+        store.close();
+        RoomStore reopened = new RoomStore(root);
+        assertEquals(5105, reopened.historyFor("reader").size());
+        reopened.close();
+    }
+
+    @Test void fileServerStreamsRangesAndRefusesOversizedImagePreview() throws Exception {
+        Path root = temp.resolve("file-http-room");
+        try (RoomStore store = new RoomStore(root); FileServer server = new FileServer(store, 0)) {
+            byte[] content = "0123456789".getBytes(StandardCharsets.UTF_8); String owner = "client_http_sender_00001";
+            String transfer = UUID.randomUUID().toString(); JsonObject meta = new JsonObject();
+            meta.addProperty("transferId", transfer); meta.addProperty("name", "range-test.txt"); meta.addProperty("mime", "text/plain");
+            meta.addProperty("size", content.length); meta.addProperty("channel", "general"); meta.addProperty("user", "مستخدم");
+            store.beginUpload(meta, "test-socket", owner); store.appendChunk(transfer, 0, Base64.getEncoder().encodeToString(content), owner);
+            JsonObject uploaded = store.completeUpload(transfer, owner); server.start();
+            var client = java.net.http.HttpClient.newHttpClient();
+            String url = "http://127.0.0.1:" + server.port() + "/api/files/" + uploaded.get("id").getAsString();
+            var partial = client.send(java.net.http.HttpRequest.newBuilder(java.net.URI.create(url)).header("Range", "bytes=2-5").GET().build(), java.net.http.HttpResponse.BodyHandlers.ofByteArray());
+            assertEquals(206, partial.statusCode()); assertArrayEquals("2345".getBytes(StandardCharsets.UTF_8), partial.body());
+            assertEquals("bytes 2-5/10", partial.headers().firstValue("Content-Range").orElse(""));
+            var full = client.send(java.net.http.HttpRequest.newBuilder(java.net.URI.create(url)).GET().build(), java.net.http.HttpResponse.BodyHandlers.ofByteArray());
+            assertEquals(200, full.statusCode()); assertArrayEquals(content, full.body());
+
+            String largeImageId = UUID.randomUUID().toString(); Path largeImage = root.resolve("files").resolve(largeImageId);
+            java.nio.file.Files.write(largeImage, new byte[8 * 1024 * 1024 + 1]); JsonObject image = new JsonObject();
+            image.addProperty("id", largeImageId); image.addProperty("type", "file"); image.addProperty("name", "large.png");
+            image.addProperty("mime", "image/png"); image.addProperty("size", 8 * 1024 * 1024 + 1); image.addProperty("diskName", largeImageId);
+            image.addProperty("channel", "general"); image.addProperty("time", System.currentTimeMillis()); store.addMessage(image);
+            var preview = client.send(java.net.http.HttpRequest.newBuilder(java.net.URI.create(url.substring(0, url.lastIndexOf('/') + 1) + largeImageId + "?preview=1")).GET().build(), java.net.http.HttpResponse.BodyHandlers.ofByteArray());
+            assertEquals(413, preview.statusCode());
+        }
     }
 }
