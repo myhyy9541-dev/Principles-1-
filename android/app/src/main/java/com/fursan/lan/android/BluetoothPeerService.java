@@ -18,6 +18,9 @@ import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Pattern;
@@ -41,6 +44,7 @@ final class BluetoothPeerService implements AutoCloseable {
     private final Listener listener;
     private final Map<String, PeerConnection> peers = new ConcurrentHashMap<>();
     private final Map<String, Boolean> connecting = new ConcurrentHashMap<>();
+    private final Map<String, BluetoothSocket> connectionAttempts = new ConcurrentHashMap<>();
     private final ThreadPoolExecutor ioExecutor = new ThreadPoolExecutor(
             0, MAX_PEERS * 3, 30, TimeUnit.SECONDS,
             new ArrayBlockingQueue<>(MAX_PEERS * 2), runnable -> {
@@ -48,6 +52,11 @@ final class BluetoothPeerService implements AutoCloseable {
                 thread.setDaemon(true);
                 return thread;
             }, new ThreadPoolExecutor.AbortPolicy());
+    private final ScheduledExecutorService connectTimeouts = Executors.newSingleThreadScheduledExecutor(runnable -> {
+        Thread thread = new Thread(runnable, "fursan-bluetooth-timeout");
+        thread.setDaemon(true);
+        return thread;
+    });
     private volatile boolean running;
     private BluetoothServerSocket serverSocket;
     private Thread acceptThread;
@@ -69,6 +78,7 @@ final class BluetoothPeerService implements AutoCloseable {
     }
 
     void connect(String address) throws IOException {
+        if (!running) throw new IOException("مستمع Bluetooth غير جاهز؛ افتح لوحة Bluetooth على الجهازين.");
         if (adapter == null || !adapter.isEnabled()) throw new IOException("فعّل Bluetooth أولاً.");
         if (!ADDRESS.matcher(address == null ? "" : address).matches() || !BluetoothAdapter.checkBluetoothAddress(address)) {
             throw new IOException("عنوان Bluetooth غير صالح.");
@@ -81,18 +91,32 @@ final class BluetoothPeerService implements AutoCloseable {
         try {
             ioExecutor.execute(() -> {
                 BluetoothSocket socket = null;
+                ScheduledFuture<?> timeout = null;
+                AtomicBoolean timedOut = new AtomicBoolean(false);
                 try {
                     BluetoothDevice device = adapter.getRemoteDevice(address);
                     socket = device.createRfcommSocketToServiceRecord(SERVICE_UUID);
+                    connectionAttempts.put(address, socket);
+                    BluetoothSocket attemptSocket = socket;
+                    timeout = connectTimeouts.schedule(() -> {
+                        timedOut.set(true);
+                        closeQuietly(attemptSocket);
+                    }, 25, TimeUnit.SECONDS);
+                    try { adapter.cancelDiscovery(); } catch (SecurityException ignored) { }
                     socket.connect();
+                    timeout.cancel(false);
                     connecting.remove(address);
                     attach(socket, device);
                     socket = null;
                 } catch (Exception error) {
+                    if (timeout != null) timeout.cancel(false);
                     closeQuietly(socket);
-                    listener.onError("تعذر الاتصال بجهاز Bluetooth: " + safeMessage(error));
+                    listener.onError(timedOut.get()
+                            ? "انتهت مهلة Bluetooth بعد 25 ثانية؛ افتح مستمع Bluetooth على الجهاز الآخر ثم أعد المحاولة."
+                            : "تعذر الاتصال بجهاز Bluetooth: " + safeMessage(error));
                 } finally {
                     connecting.remove(address);
+                    connectionAttempts.remove(address);
                 }
             });
         } catch (RejectedExecutionException error) {
@@ -186,10 +210,13 @@ final class BluetoothPeerService implements AutoCloseable {
         serverSocket = null;
         if (server != null) try { server.close(); } catch (IOException ignored) { }
         for (PeerConnection peer : peers.values()) peer.close();
+        for (BluetoothSocket attempt : connectionAttempts.values()) closeQuietly(attempt);
         peers.clear();
         connecting.clear();
+        connectionAttempts.clear();
         if (acceptThread != null) acceptThread.interrupt();
         acceptThread = null;
+        connectTimeouts.shutdownNow();
         ioExecutor.shutdownNow();
     }
 

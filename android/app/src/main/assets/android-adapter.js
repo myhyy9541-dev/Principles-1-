@@ -19,7 +19,11 @@
     sendBluetoothFrame: (address, frame) => window.FursanBluetooth?.send(address, JSON.stringify(frame)) || false,
     disconnectBluetooth: address => window.FursanBluetooth?.disconnect(address),
     stopBluetooth: () => window.FursanBluetooth?.stop(),
-    onBluetoothEvent: callback => listen('fursan-bt-event', callback)
+    onBluetoothEvent: callback => listen('fursan-bt-event', callback),
+    connectWifiPeer: (address, port, instanceId) => window.FursanWifiPeer?.connect(address, String(port), instanceId) || 'unavailable',
+    sendWifiFrame: (address, frame) => window.FursanWifiPeer?.send(address, JSON.stringify(frame)) || false,
+    disconnectWifiPeer: address => window.FursanWifiPeer?.disconnect(address),
+    onWifiEvent: callback => listen('fursan-wifi-event', callback)
   };
   window.addEventListener('DOMContentLoaded', () => {
     const folderButton = document.getElementById('folderBtn');

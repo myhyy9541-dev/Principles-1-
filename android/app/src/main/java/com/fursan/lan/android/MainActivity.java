@@ -41,8 +41,8 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.util.ArrayList;
-import java.util.LinkedHashSet;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.nio.charset.StandardCharsets;
 
 public final class MainActivity extends Activity implements PeerDiscovery.Listener, BluetoothPeerService.Listener {
@@ -52,9 +52,10 @@ public final class MainActivity extends Activity implements PeerDiscovery.Listen
     private static final int MEDIA_REQUEST = 7102;
     private static final int BLUETOOTH_REQUEST = 7103;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
-    private final Set<String> knownPeers = new LinkedHashSet<>();
+    private final Set<String> knownPeers = ConcurrentHashMap.newKeySet();
     private WebView webView;
     private PeerDiscovery discovery;
+    private volatile WifiPeerService wifiPeerService;
     private volatile BluetoothPeerService bluetoothService;
     private ConnectivityManager connectivityManager;
     private WifiManager.MulticastLock multicastLock;
@@ -74,6 +75,7 @@ public final class MainActivity extends Activity implements PeerDiscovery.Listen
         webView.setLayoutParams(new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         setContentView(webView);
         webView.addJavascriptInterface(new BluetoothJsBridge(), "FursanBluetooth");
+        webView.addJavascriptInterface(new WifiJsBridge(), "FursanWifiPeer");
 
         WebSettings settings = webView.getSettings();
         settings.setJavaScriptEnabled(true);
@@ -108,6 +110,12 @@ public final class MainActivity extends Activity implements PeerDiscovery.Listen
                 pageReady = true;
                 webView.evaluateJavascript("document.getElementById('connectionText').textContent='جارٍ اكتشاف أجهزة فرسان لان عبر Wi‑Fi…';", null);
                 startDiscovery();
+                if (hasBluetoothPermission()) {
+                    try {
+                        BluetoothAdapter adapter = BluetoothAdapter.getDefaultAdapter();
+                        if (adapter != null && adapter.isEnabled()) startBluetoothService();
+                    } catch (SecurityException ignored) { }
+                }
             }
         });
         webView.setWebChromeClient(new WebChromeClient() {
@@ -182,8 +190,37 @@ public final class MainActivity extends Activity implements PeerDiscovery.Listen
             }
             discovery = new PeerDiscovery(this);
             discovery.start();
+            WifiPeerService service = new WifiPeerService(this, new WifiPeerService.Listener() {
+                @Override public void onWifiPeerConnected(String address) {
+                    JSONObject detail = new JSONObject();
+                    try { detail.put("address", address); } catch (Exception ignored) { return; }
+                    dispatchWifiEvent("peer-connected", detail);
+                }
+                @Override public void onWifiPeerDisconnected(String address) {
+                    knownPeers.remove(address + ":" + WifiPeerService.PEER_PORT);
+                    JSONObject detail = new JSONObject();
+                    try { detail.put("address", address); } catch (Exception ignored) { return; }
+                    dispatchWifiEvent("peer-disconnected", detail);
+                }
+                @Override public void onWifiFrame(String address, JSONObject frame) {
+                    JSONObject detail = new JSONObject();
+                    try { detail.put("address", address); detail.put("frame", frame); } catch (Exception ignored) { return; }
+                    dispatchWifiEvent("frame", detail);
+                }
+                @Override public void onWifiError(String address, String message) {
+                    if (address != null) knownPeers.remove(address + ":" + WifiPeerService.PEER_PORT);
+                    JSONObject detail = new JSONObject();
+                    try { detail.put("message", message); } catch (Exception ignored) { }
+                    if (address != null) try { detail.put("address", address); } catch (Exception ignored) { }
+                    dispatchWifiEvent("notice", detail);
+                }
+            });
+            service.start();
+            wifiPeerService = service;
         } catch (SecurityException error) {
             dispatchNotice("يحتاج اكتشاف الشبكة إلى إذن Wi‑Fi المحلي.");
+        } catch (Exception error) {
+            dispatchNotice("تعذر تشغيل اتصال Wi‑Fi المباشر: " + error.getMessage());
         }
     }
 
@@ -216,12 +253,15 @@ public final class MainActivity extends Activity implements PeerDiscovery.Listen
 
     @Override
     public void onPeer(PeerDiscovery.PeerAdvertisement peer) {
+        WifiPeerService activeWifiService = wifiPeerService;
+        if (activeWifiService != null && activeWifiService.getInstanceId().equalsIgnoreCase(peer.instanceId)) return;
         String endpoint = peer.address + ":" + peer.port;
         if (!knownPeers.add(endpoint)) return;
         mainHandler.post(() -> {
             if (webView == null || !pageReady) return;
             try {
-                JSONObject data = new JSONObject().put("address", peer.address).put("port", peer.port).put("name", peer.name);
+                JSONObject data = new JSONObject().put("address", peer.address).put("port", peer.port).put("name", peer.name)
+                        .put("transport", peer.transport).put("instanceId", peer.instanceId);
                 webView.evaluateJavascript("window.dispatchEvent(new CustomEvent('fursan-peer-found',{detail:" + data + "}));", null);
             } catch (Exception error) {
                 Log.w(TAG, "Could not announce discovered peer", error);
@@ -250,7 +290,7 @@ public final class MainActivity extends Activity implements PeerDiscovery.Listen
                 || checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED;
     }
 
-    private void startBluetoothService() {
+    private synchronized void startBluetoothService() {
         if (bluetoothService != null) return;
         try {
             BluetoothAdapter adapter = BluetoothAdapter.getDefaultAdapter();
@@ -269,6 +309,13 @@ public final class MainActivity extends Activity implements PeerDiscovery.Listen
         JSONObject event = new JSONObject();
         try { event.put("type", type); event.put("detail", detail); } catch (Exception ignored) { return; }
         String script = "window.dispatchEvent(new CustomEvent('fursan-bt-event',{detail:" + event.toString() + "}));";
+        mainHandler.post(() -> { if (webView != null && pageReady) webView.evaluateJavascript(script, null); });
+    }
+
+    private void dispatchWifiEvent(String type, JSONObject detail) {
+        JSONObject event = new JSONObject();
+        try { event.put("type", type); event.put("detail", detail); } catch (Exception ignored) { return; }
+        String script = "window.dispatchEvent(new CustomEvent('fursan-wifi-event',{detail:" + event.toString() + "}));";
         mainHandler.post(() -> { if (webView != null && pageReady) webView.evaluateJavascript(script, null); });
     }
 
@@ -333,7 +380,12 @@ public final class MainActivity extends Activity implements PeerDiscovery.Listen
         @JavascriptInterface
         public String connect(String address) {
             BluetoothPeerService service = bluetoothService;
-            if (service == null) return "not-started";
+            if (service == null) {
+                if (Build.VERSION.SDK_INT >= 31 && !hasBluetoothPermission()) return "error:امنح إذن الأجهزة القريبة ثم أعد المحاولة.";
+                startBluetoothService();
+                service = bluetoothService;
+            }
+            if (service == null) return "error:تعذر تشغيل مستمع Bluetooth على هذا الهاتف.";
             try { service.connect(address); return "connecting"; }
             catch (Exception error) { return "error:" + error.getMessage(); }
         }
@@ -363,6 +415,33 @@ public final class MainActivity extends Activity implements PeerDiscovery.Listen
                 bluetoothService = null;
                 if (service != null) service.close();
             });
+        }
+    }
+
+    private final class WifiJsBridge {
+        @JavascriptInterface
+        public String connect(String address, String port, String instanceId) {
+            WifiPeerService service = wifiPeerService;
+            if (service == null) return "error:خدمة Wi‑Fi المباشرة غير جاهزة؛ تحقق من اتصال Wi‑Fi ثم أعد فتح التطبيق.";
+            try { return service.connect(address, Integer.parseInt(port), instanceId) ? "connecting" : "waiting-for-peer"; }
+            catch (Exception error) { return "error:" + error.getMessage(); }
+        }
+
+        @JavascriptInterface
+        public boolean send(String address, String frameJson) {
+            WifiPeerService service = wifiPeerService;
+            if (service == null || frameJson == null || frameJson.length() > BluetoothFrameCodec.MAX_FRAME_BYTES) return false;
+            try {
+                JSONObject frame = new JSONObject(frameJson);
+                if (frame.toString().getBytes(StandardCharsets.UTF_8).length > BluetoothFrameCodec.MAX_FRAME_BYTES) return false;
+                return service.send(address, frame);
+            } catch (Exception error) { return false; }
+        }
+
+        @JavascriptInterface
+        public void disconnect(String address) {
+            WifiPeerService service = wifiPeerService;
+            if (service != null) service.disconnect(address);
         }
     }
 
@@ -472,6 +551,9 @@ public final class MainActivity extends Activity implements PeerDiscovery.Listen
         BluetoothPeerService activeBluetooth = bluetoothService;
         bluetoothService = null;
         if (activeBluetooth != null) activeBluetooth.close();
+        WifiPeerService activeWifi = wifiPeerService;
+        wifiPeerService = null;
+        if (activeWifi != null) activeWifi.close();
         if (discovery != null) discovery.close();
         if (multicastLock != null && multicastLock.isHeld()) multicastLock.release();
         if (processBoundToWifi && connectivityManager != null) connectivityManager.bindProcessToNetwork(null);

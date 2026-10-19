@@ -15,6 +15,7 @@ final class PeerDiscovery implements AutoCloseable {
     static final int DISCOVERY_PORT = 43820;
     static final int PEER_PORT = 43821;
     static final String PROTOCOL = "fursan-p2p-v1";
+    static final String ANDROID_PROTOCOL = WifiPeerService.PROTOCOL;
     private static final String TAG = "FursanPeerDiscovery";
     private final Listener listener;
     private volatile boolean running;
@@ -31,7 +32,7 @@ final class PeerDiscovery implements AutoCloseable {
     }
 
     static boolean isCompatible(String protocol, int port) {
-        return PROTOCOL.equals(protocol) && port == PEER_PORT;
+        return (PROTOCOL.equals(protocol) || ANDROID_PROTOCOL.equals(protocol)) && port == PEER_PORT;
     }
 
     static PeerAdvertisement parseAdvertisement(byte[] bytes, int length, String address) {
@@ -41,10 +42,12 @@ final class PeerDiscovery implements AutoCloseable {
             String protocol = packet.optString("protocol", "");
             int port = packet.optInt("port", -1);
             if (!isCompatible(protocol, port)) return null;
-            String name = packet.optString("name", "نظير Windows").replaceAll("[\\r\\n\\u0000]", " ").trim();
+            boolean androidFramePeer = ANDROID_PROTOCOL.equals(protocol);
+            String name = packet.optString("name", androidFramePeer ? "نظير Android" : "نظير Windows").replaceAll("[\\r\\n\\u0000]", " ").trim();
             if (name.length() > 80) name = name.substring(0, 80);
-            if (name.isEmpty()) name = "نظير Windows";
-            return new PeerAdvertisement(address, port, name);
+            if (name.isEmpty()) name = androidFramePeer ? "نظير Android" : "نظير Windows";
+            String transport = androidFramePeer ? "wifi-frame-v1" : "socketio";
+            return new PeerAdvertisement(address, port, name, transport, packet.optString("instanceId", ""));
         } catch (Exception error) {
             Log.d(TAG, "Ignoring malformed peer advertisement", error);
             return null;
@@ -105,11 +108,15 @@ final class PeerDiscovery implements AutoCloseable {
         final String address;
         final int port;
         final String name;
+        final String transport;
+        final String instanceId;
 
-        PeerAdvertisement(String address, int port, String name) {
+        PeerAdvertisement(String address, int port, String name, String transport, String instanceId) {
             this.address = address;
             this.port = port;
             this.name = name;
+            this.transport = transport;
+            this.instanceId = instanceId;
         }
     }
 }

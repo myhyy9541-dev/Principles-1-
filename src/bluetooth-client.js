@@ -5,9 +5,9 @@
 
   class BluetoothPeerSocket {
     constructor({ address, localProfile, sendFrame, transport = 'bluetooth' }) {
-      if (!address || typeof sendFrame !== 'function') throw new TypeError('Bluetooth address and sendFrame are required');
+      if (!address || typeof sendFrame !== 'function') throw new TypeError('Peer address and sendFrame are required');
       this.address = String(address);
-      this._fursanAddress = `bluetooth:${this.address}`;
+      this._fursanAddress = `${transport}:${this.address}`;
       this.transport = transport;
       this.connected = true;
       this.id = this._fursanAddress;
@@ -35,7 +35,7 @@
 
     emit(event, data, callback) {
       if (!this.connected) {
-        if (typeof callback === 'function') callback({ ok: false, error: 'انقطع اتصال Bluetooth.' });
+        if (typeof callback === 'function') callback({ ok: false, error: 'انقطع اتصال النظير.' });
         return this;
       }
       const id = typeof callback === 'function' ? `${Date.now().toString(36)}-${++this.sequence}` : undefined;
@@ -79,7 +79,7 @@
           user: this.remoteProfile.name,
           senderId: this.remoteProfile.clientId,
           senderClientId: this.remoteProfile.clientId,
-          transport: 'bluetooth',
+        transport: this.transport,
           time: Number(data.time) || Date.now(),
           deliveredTo: Array.isArray(data.deliveredTo) ? data.deliveredTo : [],
           readBy: Array.isArray(data.readBy) ? data.readBy : []
@@ -97,7 +97,7 @@
         platform: frame.platform === 'android' ? 'android' : 'windows'
       };
       this._dispatch('peer-profile', this.remoteProfile);
-      this._dispatch('connect', { id: this.id, transport: 'bluetooth' });
+    this._dispatch('connect', { id: this.id, transport: this.transport });
       return true;
     }
 
@@ -110,7 +110,7 @@
     close(reason = 'disconnect') {
       if (!this.connected) return;
       this.connected = false;
-      for (const callback of this.pendingAcks.values()) callback({ ok: false, error: 'انقطع اتصال Bluetooth.' });
+      for (const callback of this.pendingAcks.values()) callback({ ok: false, error: 'انقطع اتصال النظير.' });
       this.pendingAcks.clear();
       this._dispatch(reason, { address: this.address });
       this.handlers.clear();

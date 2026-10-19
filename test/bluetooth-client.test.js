@@ -41,6 +41,21 @@ test('maps direct Bluetooth chat to a normalized local chat message', () => {
   assert.equal(messages[0].text, 'مرحبا');
 });
 
+test('supports the same framed peer protocol over direct Wi-Fi', () => {
+  const BluetoothPeerSocket = loadClient();
+  const peer = new BluetoothPeerSocket({ address: '192.168.49.2', localProfile: local, sendFrame: () => true, transport: 'wifi-frame-v1' });
+  const connections = [];
+  const messages = [];
+  peer.on('connect', data => connections.push(data));
+  peer.on('chat-message', message => messages.push(message));
+  assert.equal(peer._fursanAddress, 'wifi-frame-v1:192.168.49.2');
+  peer.receive({ v: 1, type: 'hello', ...remote });
+  peer.receive({ v: 1, type: 'event', event: 'chat', data: { id: 'message-2', text: 'عبر Wi-Fi', toId: local.clientId } });
+  assert.equal(connections[0].transport, 'wifi-frame-v1');
+  assert.equal(messages[0].transport, 'wifi-frame-v1');
+  assert.equal(messages[0].text, 'عبر Wi-Fi');
+});
+
 test('resolves acknowledged emits and clears pending callbacks on disconnect', async () => {
   const BluetoothPeerSocket = loadClient();
   const sent = [];
