@@ -5,15 +5,27 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 import java.util.UUID;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.slf4j.LoggerFactory;
 
 class CoreServicesTest {
     @TempDir Path temp;
+    private final List<RoomStore> openStores = new ArrayList<>();
+
+    private RoomStore openStore(Path path) throws IOException {
+        RoomStore store = new RoomStore(path); openStores.add(store); return store;
+    }
+    @AfterEach void closeStores() {
+        for (RoomStore store : openStores) store.close();
+        openStores.clear();
+    }
 
     @Test void slf4jProviderIsInstalled() {
         assertEquals("org.slf4j.simple.SimpleLoggerFactory", LoggerFactory.getILoggerFactory().getClass().getName());
@@ -35,7 +47,7 @@ class CoreServicesTest {
     }
 
     @Test void privateHistoryAndReadReceiptsAreScopedToRecipients() throws Exception {
-        RoomStore store = new RoomStore(temp.resolve("room"));
+        RoomStore store = openStore(temp.resolve("room"));
         store.rememberContact("client_sender_00000001", "سارة"); store.rememberContact("client_recipient_0000002", "علي"); store.rememberContact("client_other_000000003", "نور");
         JsonObject message = new JsonObject(); message.addProperty("id", UUID.randomUUID().toString()); message.addProperty("type", "text"); message.addProperty("text", "خاص");
         message.addProperty("senderClientId", "client_sender_00000001"); message.addProperty("channel", "direct"); message.addProperty("toId", "client_recipient_0000002");
@@ -51,7 +63,7 @@ class CoreServicesTest {
     }
 
     @Test void groupsRestrictVisibilityAndFileUploadsEnforceOwner() throws Exception {
-        RoomStore store = new RoomStore(temp.resolve("room"));
+        RoomStore store = openStore(temp.resolve("room"));
         String owner = "client_owner_0000000001", member = "client_member_00000002", other = "client_other_000000003";
         store.rememberContact(owner, "أحمد"); store.rememberContact(member, "هند"); store.rememberContact(other, "سعيد");
         JsonObject group = store.createGroup("الفريق", List.of(member), owner);
@@ -68,7 +80,7 @@ class CoreServicesTest {
     }
 
     @Test void largeUploadChunkAndOneGigabyteFileLimitAreAccepted() throws Exception {
-        RoomStore store = new RoomStore(temp.resolve("large-room"));
+        RoomStore store = openStore(temp.resolve("large-room"));
         assertEquals(1024L * 1024 * 1024, RoomStore.MAX_FILE_BYTES);
         assertEquals(10L * 1024 * 1024 * 1024, RoomStore.MAX_STORAGE_BYTES);
         String sender = "client_large_sender_00001";
@@ -90,12 +102,12 @@ class CoreServicesTest {
     @Test void oldMessagesWithoutChannelAreMigratedToGeneral() throws Exception {
         Path root = temp.resolve("room"); java.nio.file.Files.createDirectories(root);
         java.nio.file.Files.writeString(root.resolve("history.json"), "[{\"id\":\"old\",\"type\":\"text\",\"text\":\"قديم\"}]");
-        RoomStore store = new RoomStore(root);
+        RoomStore store = openStore(root);
         assertEquals("general", store.historyFor("any-client").get(0).getAsJsonObject().get("channel").getAsString());
     }
 
     @Test void messageHistoryHasNoFiveThousandMessageCapAndLoadsInPages() throws Exception {
-        Path root = temp.resolve("unbounded-room"); RoomStore store = new RoomStore(root);
+        Path root = temp.resolve("unbounded-room"); RoomStore store = openStore(root);
         List<JsonObject> batch = new java.util.ArrayList<>();
         for (int i = 1; i <= 5105; i++) {
             JsonObject message = new JsonObject(); message.addProperty("id", UUID.randomUUID().toString()); message.addProperty("type", "text");
@@ -110,10 +122,8 @@ class CoreServicesTest {
         JsonArray older = store.historyPageForChat("reader", "general", firstTime, latest.get(0).getAsJsonObject().get("id").getAsString(), RoomStore.HISTORY_PAGE_SIZE);
         assertEquals(RoomStore.HISTORY_PAGE_SIZE, older.size());
         assertTrue(older.get(older.size() - 1).getAsJsonObject().get("time").getAsLong() < firstTime);
-        store.close();
-        RoomStore reopened = new RoomStore(root);
+        RoomStore reopened = openStore(root);
         assertEquals(5105, reopened.historyFor("reader").size());
-        reopened.close();
     }
 
     @Test void fileServerStreamsRangesAndRefusesOversizedImagePreview() throws Exception {
