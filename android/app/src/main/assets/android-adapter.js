@@ -25,6 +25,9 @@
     connectWifiPeerManually: address => window.FursanWifiPeer?.connectManual(address) || 'unavailable',
     createWifiPairingQr: () => window.FursanWifiPeer?.createPairingQr() || '{"error":"تعذر الوصول إلى مُنشئ QR."}',
     scanWifiPairingQr: () => window.FursanWifiPeer?.scanPairingQr() || 'unavailable',
+    createWifiDirectGroup: () => window.FursanWifiPeer?.createWifiDirectGroup() || 'unavailable',
+    discoverWifiDirectPeers: () => window.FursanWifiPeer?.discoverWifiDirectPeers() || 'unavailable',
+    connectWifiDirectPeer: address => window.FursanWifiPeer?.connectWifiDirectPeer(address) || 'unavailable',
     sendWifiFrame: (address, frame) => window.FursanWifiPeer?.send(address, JSON.stringify(frame)) || false,
     disconnectWifiPeer: address => window.FursanWifiPeer?.disconnect(address),
     onWifiEvent: callback => listen('fursan-wifi-event', callback)

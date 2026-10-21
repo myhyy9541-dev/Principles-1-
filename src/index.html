@@ -60,6 +60,13 @@
       <div id="peerBanner" class="banner hidden"><b>نقطة هذا الجهاز جاهزة</b><span id="peerAddress"></span></div>
       <section id="wifiPeerPanel" class="wifi-peer-panel hidden" aria-label="ربط هاتف Android عبر Wi-Fi">
         <div><b>ربط هاتف Android مباشرةً</b><small id="wifiLocalAddresses">عناوين هذا الهاتف: جارٍ الفحص…</small></div>
+        <div class="wifi-direct-controls">
+          <button id="wifiDirectCreateGroup" class="call-control" type="button">إنشاء شبكة Wi‑Fi Direct</button>
+          <button id="wifiDirectDiscover" class="call-control" type="button">البحث عن هاتف</button>
+          <select id="wifiDirectPeerList" aria-label="أجهزة Wi‑Fi Direct القريبة"><option value="">اضغط البحث عن هاتف</option></select>
+          <button id="wifiDirectJoin" class="call-control" type="button">انضمام مباشر</button>
+          <small id="wifiDirectStatus" role="status">من هاتف اختر «إنشاء شبكة»، ومن الآخر اختر «البحث عن هاتف» ثم «انضمام مباشر».</small>
+        </div>
         <button id="wifiShowPairingQr" class="call-control" type="button">إنشاء رمز QR وعرضه</button>
         <button id="wifiScanPairingQr" class="call-control" type="button">مسح رمز الهاتف الآخر</button>
         <input id="wifiPeerAddress" inputmode="decimal" autocomplete="off" placeholder="عنوان الهاتف الآخر، مثال 192.168.49.2" aria-label="عنوان IP للهاتف الآخر">

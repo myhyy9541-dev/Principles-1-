@@ -484,6 +484,16 @@ window.wasel.onWifiEvent?.(event => {
   if (detail.type === 'pairing-started') {
     $('connectionText').textContent = `تم مسح رمز النظير؛ جارٍ الاتصال مباشرةً بـ ${detail.address}:43821…`;
     toast('تمت قراءة رمز فرسان لان، جارٍ بدء الاتصال المباشر.');
+  } else if (detail.type === 'wifi-direct-status') {
+    $('wifiDirectStatus').textContent = detail.message || 'تحديث حالة Wi‑Fi Direct.';
+  } else if (detail.type === 'wifi-direct-peers') {
+    const list = $('wifiDirectPeerList');
+    list.replaceChildren(new Option('اختر هاتفًا قريبًا', ''));
+    for (const peer of detail.peers || []) {
+      if (!peer.address) continue;
+      list.add(new Option(`${peer.name} — ${peer.status}`, peer.address));
+    }
+    if (!(detail.peers || []).length) $('wifiDirectStatus').textContent = 'لم يُعثر على أجهزة. افتح شاشة Wi‑Fi Direct على الهاتف الآخر ثم أعد البحث.';
   } else if (detail.type === 'peer-connected') {
     registerBluetoothSocket(detail.address, null, true, 'wifi-frame-v1');
     $('connectionText').textContent = `متصل مباشرةً عبر Wi‑Fi · ${detail.address}`;
@@ -529,6 +539,13 @@ if (window.FURSAN_ANDROID) {
   $('wifiScanPairingQr').onclick = () => {
     const state = window.wasel.scanWifiPairingQr();
     if (state === 'unavailable') toast('ماسح QR غير متاح في هذه النسخة.');
+  };
+  $('wifiDirectCreateGroup').onclick = () => window.wasel.createWifiDirectGroup();
+  $('wifiDirectDiscover').onclick = () => window.wasel.discoverWifiDirectPeers();
+  $('wifiDirectJoin').onclick = () => {
+    const address = $('wifiDirectPeerList').value;
+    if (!address) return toast('ابحث أولًا ثم اختر هاتفًا من قائمة Wi‑Fi Direct.');
+    window.wasel.connectWifiDirectPeer(address);
   };
   $('wifiPeerAddress').addEventListener('keydown', event => {
     if (event.key === 'Enter') $('wifiPeerConnect').click();

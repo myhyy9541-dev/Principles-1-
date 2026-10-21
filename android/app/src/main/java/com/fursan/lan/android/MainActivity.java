@@ -60,18 +60,23 @@ public final class MainActivity extends Activity implements PeerDiscovery.Listen
     private static final int FILE_REQUEST = 7101;
     private static final int MEDIA_REQUEST = 7102;
     private static final int BLUETOOTH_REQUEST = 7103;
+    private static final int WIFI_DIRECT_PERMISSION_REQUEST = 7104;
     private static final int QR_SIZE = 480;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final Set<String> knownPeers = ConcurrentHashMap.newKeySet();
     private WebView webView;
     private PeerDiscovery discovery;
     private volatile WifiPeerService wifiPeerService;
+    private volatile WifiDirectController wifiDirectController;
     private volatile BluetoothPeerService bluetoothService;
     private WifiManager.MulticastLock multicastLock;
     private ValueCallback<Uri[]> fileChooserCallback;
     private PermissionRequest pendingMediaRequest;
     private String[] pendingWebResources = new String[0];
     private boolean pageReady;
+    private String pendingWifiDirectAction;
+    private String pendingWifiDirectPeer;
+    private volatile String connectedWifiDirectOwner;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -221,10 +226,96 @@ public final class MainActivity extends Activity implements PeerDiscovery.Listen
             });
             service.start();
             wifiPeerService = service;
+            startWifiDirectController();
         } catch (SecurityException error) {
             dispatchNotice("يحتاج اكتشاف الشبكة إلى إذن Wi‑Fi المحلي.");
         } catch (Exception error) {
             dispatchNotice("تعذر تشغيل اتصال Wi‑Fi المباشر: " + error.getMessage());
+        }
+    }
+
+    private void startWifiDirectController() {
+        if (wifiDirectController != null) return;
+        wifiDirectController = new WifiDirectController(this, new WifiDirectController.Listener() {
+            @Override public void onStatus(String message) {
+                JSONObject detail = new JSONObject();
+                try { detail.put("message", message); } catch (Exception ignored) { }
+                dispatchWifiEvent("wifi-direct-status", detail);
+            }
+
+            @Override public void onPeers(JSONArray peers) {
+                JSONObject detail = new JSONObject();
+                try { detail.put("peers", peers); } catch (Exception ignored) { }
+                dispatchWifiEvent("wifi-direct-peers", detail);
+            }
+
+            @Override public void onGroupConnected(String ownerAddress, boolean isGroupOwner) {
+                handleWifiDirectConnected(ownerAddress, isGroupOwner);
+            }
+
+            @Override public void onGroupDisconnected() {
+                connectedWifiDirectOwner = null;
+                JSONObject detail = new JSONObject();
+                try { detail.put("message", "انقطعت مجموعة Wi‑Fi Direct؛ يمكنك إنشاء مجموعة أو إعادة البحث والانضمام."); }
+                catch (Exception ignored) { }
+                dispatchWifiEvent("wifi-direct-status", detail);
+            }
+
+            @Override public void onError(String message) {
+                JSONObject detail = new JSONObject();
+                try { detail.put("message", message); } catch (Exception ignored) { }
+                dispatchWifiEvent("notice", detail);
+            }
+        });
+        wifiDirectController.start();
+    }
+
+    private String requiredWifiDirectPermission() {
+        return Build.VERSION.SDK_INT >= 33
+                ? Manifest.permission.NEARBY_WIFI_DEVICES : Manifest.permission.ACCESS_FINE_LOCATION;
+    }
+
+    private String runWifiDirectAction(String action, String peerAddress) {
+        if (wifiDirectController == null) startWifiDirectController();
+        String permission = requiredWifiDirectPermission();
+        if (checkSelfPermission(permission) != PackageManager.PERMISSION_GRANTED) {
+            pendingWifiDirectAction = action;
+            pendingWifiDirectPeer = peerAddress;
+            requestPermissions(new String[]{permission}, WIFI_DIRECT_PERMISSION_REQUEST);
+            return "permission-required";
+        }
+        WifiDirectController controller = wifiDirectController;
+        if (controller == null) return "error:تعذر تهيئة Wi‑Fi Direct.";
+        controller.start();
+        if ("create".equals(action)) controller.createGroup();
+        else if ("discover".equals(action)) controller.discoverPeers();
+        else if ("connect".equals(action)) controller.connect(peerAddress);
+        return "started";
+    }
+
+    private void handleWifiDirectConnected(String ownerAddress, boolean isGroupOwner) {
+        if (ownerAddress == null || ownerAddress.trim().isEmpty()) return;
+        JSONObject detail = new JSONObject();
+        try {
+            detail.put("ownerAddress", ownerAddress);
+            detail.put("isGroupOwner", isGroupOwner);
+            detail.put("message", isGroupOwner
+                    ? "أُنشئت مجموعة Wi‑Fi Direct؛ هذا الهاتف مالك المجموعة وينتظر النظير."
+                    : "انضم الهاتف إلى مجموعة Wi‑Fi Direct؛ جارٍ الاتصال بمالك المجموعة.");
+        } catch (Exception ignored) { }
+        dispatchWifiEvent("wifi-direct-status", detail);
+        if (isGroupOwner || ownerAddress.equals(connectedWifiDirectOwner)) return;
+        connectedWifiDirectOwner = ownerAddress;
+        WifiPeerService service = wifiPeerService;
+        if (service == null) {
+            dispatchNotice("خادم النظير لم يبدأ؛ أعد فتح فرسان لان ثم أعد اتصال Wi‑Fi Direct.");
+            return;
+        }
+        try {
+            service.connectManually(ownerAddress);
+        } catch (Exception error) {
+            connectedWifiDirectOwner = null;
+            dispatchNotice("تكوّنت مجموعة Wi‑Fi Direct لكن تعذر فتح قناة المراسلة: " + error.getMessage());
         }
     }
 
@@ -411,6 +502,25 @@ public final class MainActivity extends Activity implements PeerDiscovery.Listen
 
     private final class WifiJsBridge {
         @JavascriptInterface
+        public String createWifiDirectGroup() {
+            runOnUiThread(() -> runWifiDirectAction("create", null));
+            return "starting";
+        }
+
+        @JavascriptInterface
+        public String discoverWifiDirectPeers() {
+            runOnUiThread(() -> runWifiDirectAction("discover", null));
+            return "searching";
+        }
+
+        @JavascriptInterface
+        public String connectWifiDirectPeer(String address) {
+            if (address == null) return "error:اختر جهازًا من قائمة Wi‑Fi Direct.";
+            runOnUiThread(() -> runWifiDirectAction("connect", address));
+            return "connecting";
+        }
+
+        @JavascriptInterface
         public String createPairingQr() {
             WifiPeerService service = wifiPeerService;
             if (service == null) return "{\"error\":\"خدمة Wi-Fi المباشرة غير جاهزة.\"}";
@@ -551,6 +661,20 @@ public final class MainActivity extends Activity implements PeerDiscovery.Listen
             }
             return;
         }
+        if (requestCode == WIFI_DIRECT_PERMISSION_REQUEST) {
+            String action = pendingWifiDirectAction;
+            String peerAddress = pendingWifiDirectPeer;
+            pendingWifiDirectAction = null;
+            pendingWifiDirectPeer = null;
+            if (checkSelfPermission(requiredWifiDirectPermission()) == PackageManager.PERMISSION_GRANTED && action != null) {
+                runWifiDirectAction(action, peerAddress);
+            } else {
+                dispatchNotice(Build.VERSION.SDK_INT >= 33
+                        ? "يلزم السماح بإذن الأجهزة القريبة لاستخدام Wi‑Fi Direct."
+                        : "يلزم إذن الموقع لاكتشاف Wi‑Fi Direct على إصدارات Android القديمة؛ لا يستخدم فرسان لان موقعك.");
+            }
+            return;
+        }
         if (requestCode != MEDIA_REQUEST || pendingMediaRequest == null) return;
         ArrayList<String> allowed = new ArrayList<>();
         for (String resource : pendingWebResources) {
@@ -617,6 +741,9 @@ public final class MainActivity extends Activity implements PeerDiscovery.Listen
 
     @Override
     protected void onDestroy() {
+        WifiDirectController activeWifiDirect = wifiDirectController;
+        wifiDirectController = null;
+        if (activeWifiDirect != null) activeWifiDirect.close();
         BluetoothPeerService activeBluetooth = bluetoothService;
         bluetoothService = null;
         if (activeBluetooth != null) activeBluetooth.close();
