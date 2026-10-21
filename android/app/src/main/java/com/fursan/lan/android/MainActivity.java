@@ -83,6 +83,8 @@ public final class MainActivity extends Activity implements PeerDiscovery.Listen
     private boolean pageReady;
     private String pendingWifiDirectAction;
     private String pendingWifiDirectPeer;
+    private volatile String localWifiClientId;
+    private volatile String localWifiDisplayName;
     private volatile String connectedWifiDirectOwner;
 
     @Override
@@ -254,6 +256,16 @@ public final class MainActivity extends Activity implements PeerDiscovery.Listen
                 JSONObject detail = new JSONObject();
                 try { detail.put("peers", peers); } catch (Exception ignored) { }
                 dispatchWifiEvent("wifi-direct-peers", detail);
+            }
+
+            @Override public void onContactFound(String clientId, String name, String deviceAddress) {
+                JSONObject detail = new JSONObject();
+                try {
+                    detail.put("clientId", clientId);
+                    detail.put("name", name);
+                    detail.put("deviceAddress", deviceAddress);
+                } catch (Exception ignored) { return; }
+                dispatchWifiEvent("wifi-direct-contact-found", detail);
             }
 
             @Override public void onGroupConnected(String ownerAddress, boolean isGroupOwner) {
@@ -446,7 +458,12 @@ public final class MainActivity extends Activity implements PeerDiscovery.Listen
         WifiDirectController controller = wifiDirectController;
         if (controller == null) return "error:تعذر تهيئة Wi‑Fi Direct.";
         controller.start();
-        if ("create".equals(action)) controller.createGroup();
+        if ("auto-discovery".equals(action)) controller.setLocalIdentity(localWifiClientId, localWifiDisplayName);
+        else if ("connect-contact".equals(action)) {
+            controller.setLocalIdentity(localWifiClientId, localWifiDisplayName);
+            controller.connectContact(peerAddress);
+        }
+        else if ("create".equals(action)) controller.createGroup();
         else if ("discover".equals(action)) controller.discoverPeers();
         else if ("connect".equals(action)) controller.connect(peerAddress);
         return "started";
@@ -490,6 +507,18 @@ public final class MainActivity extends Activity implements PeerDiscovery.Listen
     protected void onResume() {
         super.onResume();
         if (pageReady && discovery == null) startDiscovery();
+        WifiDirectController controller = wifiDirectController;
+        if (pageReady && controller != null && localWifiClientId != null
+                && checkSelfPermission(requiredWifiDirectPermission()) == PackageManager.PERMISSION_GRANTED) {
+            controller.startServiceDiscovery();
+        }
+    }
+
+    @Override
+    protected void onPause() {
+        WifiDirectController controller = wifiDirectController;
+        if (controller != null) controller.pauseServiceDiscovery();
+        super.onPause();
     }
 
     @Override
@@ -705,6 +734,22 @@ public final class MainActivity extends Activity implements PeerDiscovery.Listen
         public String createWifiDirectGroup() {
             runOnUiThread(() -> runWifiDirectAction("create", null));
             return "starting";
+        }
+
+        @JavascriptInterface
+        public String startWifiDirectDiscovery(String clientId, String name) {
+            if (clientId == null || !clientId.matches("^[A-Za-z0-9_-]{16,80}$")) return "error:هوية الجهاز غير صالحة.";
+            localWifiClientId = clientId;
+            localWifiDisplayName = name == null ? "هاتف Android" : name;
+            runOnUiThread(() -> runWifiDirectAction("auto-discovery", null));
+            return "starting";
+        }
+
+        @JavascriptInterface
+        public String connectWifiDirectContact(String clientId) {
+            if (clientId == null || !clientId.matches("^[A-Za-z0-9_-]{16,80}$")) return "error:هوية جهة الاتصال غير صالحة.";
+            runOnUiThread(() -> runWifiDirectAction("connect-contact", clientId));
+            return "connecting";
         }
 
         @JavascriptInterface

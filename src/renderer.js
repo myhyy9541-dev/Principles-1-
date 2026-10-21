@@ -31,7 +31,29 @@ function persistAndroidGroups() {
   if (!window.FURSAN_ANDROID) return;
   try { localStorage.setItem('fursan-android-groups', JSON.stringify(groups.slice(-200))); } catch (_) {}
 }
-let contacts = [], groups = loadAndroidGroups(), currentChat = 'general', allMessages = loadAndroidHistory(), searchTerm = '';
+function loadAndroidContacts() {
+  if (!window.FURSAN_ANDROID) return [];
+  try {
+    const saved = JSON.parse(localStorage.getItem('fursan-android-contacts') || '[]');
+    if (!Array.isArray(saved)) return [];
+    return saved.filter(item => item && /^[a-zA-Z0-9_-]{16,80}$/.test(String(item.clientId || '')))
+      .slice(-500).map(item => ({
+        clientId: String(item.clientId),
+        name: String(item.name || 'نظير').replace(/[\r\n\0]/g, ' ').slice(0, 40),
+        platform: item.platform === 'windows' ? 'windows' : 'android',
+        online: false
+      }));
+  } catch (_) { return []; }
+}
+function persistAndroidContacts() {
+  if (!window.FURSAN_ANDROID) return;
+  try {
+    const saved = contacts.filter(item => /^[a-zA-Z0-9_-]{16,80}$/.test(String(item.clientId || '')))
+      .slice(-500).map(item => ({ clientId: item.clientId, name: String(item.name || 'نظير').slice(0, 40), platform: item.platform === 'windows' ? 'windows' : 'android' }));
+    localStorage.setItem('fursan-android-contacts', JSON.stringify(saved));
+  } catch (_) {}
+}
+let contacts = loadAndroidContacts(), groups = loadAndroidGroups(), currentChat = 'general', allMessages = loadAndroidHistory(), searchTerm = '';
 const fileEndpoints = new Map();
 const readSent = new Set();
 let acceptingCall = false, startingCall = false;
@@ -243,6 +265,22 @@ function selectChat(chat) {
   if (chat === 'general') $('chatTitle').textContent = 'المحادثة العامة';
   else if (chat.startsWith('user:')) $('chatTitle').textContent = `محادثة خاصة · ${contacts.find(item => item.clientId === chat.slice(5))?.name || 'مستخدم'}`;
   else $('chatTitle').textContent = `مجموعة · ${groups.find(item => item.id === chat.slice(6))?.name || 'مجموعة'}`;
+  if (window.FURSAN_ANDROID && chat.startsWith('user:')) {
+    const peerId = chat.slice(5);
+    const contact = contacts.find(item => item.clientId === peerId);
+    if (contact?.platform === 'android' && !peerSockets.get(peerId)?.connected && !bluetoothSockets.get(peerId)?.connected) {
+      $('connectionText').textContent = `جارٍ البحث عن ${contact.name} والاتصال عبر Wi‑Fi Direct…`;
+      $('wifiDirectStatus').textContent = `جارٍ ربط ${contact.name}؛ أبقِ التطبيق مفتوحًا على الهاتفين.`;
+      const result = window.wasel.connectWifiDirectContact?.(peerId) || 'unavailable';
+      if (typeof result === 'string' && result.startsWith('error:')) {
+        $('connectionText').textContent = 'تعذر بدء اتصال Wi‑Fi Direct';
+        toast(result.slice(6));
+      } else if (result === 'unavailable') {
+        $('connectionText').textContent = 'اتصال Wi‑Fi Direct غير متاح في هذه النسخة';
+        toast('أعد تثبيت أحدث إصدار من فرسان لان.');
+      }
+    }
+  }
   renderChatOptions(); renderMessages();
 }
 function handleEvent(event, data, source, local = false) {
@@ -264,6 +302,7 @@ function handleEvent(event, data, source, local = false) {
       for (const [id, peer] of bluetoothSockets) if (peer === source) bluetoothSockets.delete(id);
       for (const [address, peer] of bluetoothConnections) if (peer === source) bluetoothConnections.delete(address);
       contacts = contacts.map(contact => ({ ...contact, online: peerSockets.has(contact.clientId) }));
+      persistAndroidContacts();
       if (window.FURSAN_ANDROID) connected = [...connectionSockets.values()].some(connection => connection.connected);
       renderChatOptions(); refreshMembers();
       if (local) { connected = false; connecting = true; $('connectionText').textContent = 'انقطع الاتصال المحلي؛ جارٍ إعادة المحاولة…'; }
@@ -277,6 +316,7 @@ function handleEvent(event, data, source, local = false) {
         if (source?.transport === 'bluetooth') bluetoothSockets.set(data.clientId, source);
         const item = { clientId: data.clientId, name: String(data.name || 'نظير'), platform: data.platform || 'windows', online: true };
         contacts = [item, ...contacts.filter(contact => contact.clientId !== item.clientId)];
+        persistAndroidContacts();
         renderChatOptions(); refreshMembers();
         for (const group of groups) source.emit('create-group', group);
         if (localStream && callMode && !peers.has(data.clientId)) makePeer(data.clientId, true);
@@ -285,7 +325,7 @@ function handleEvent(event, data, source, local = false) {
     case 'contacts': {
       const merged = new Map(contacts.map(c => [c.clientId, c]));
       for (const item of data || []) if (item.clientId !== clientId) merged.set(item.clientId, { ...merged.get(item.clientId), ...item, online: local ? Boolean(item.online) : peerSockets.has(item.clientId) });
-      contacts = [...merged.values()]; renderChatOptions(); refreshMembers(); break;
+      contacts = [...merged.values()]; persistAndroidContacts(); renderChatOptions(); refreshMembers(); break;
     }
     case 'groups': {
       const merged = new Map(groups.map(group => [group.id, group]));
@@ -536,6 +576,20 @@ window.wasel.onWifiEvent?.(event => {
     $('wifiHotspotStatus').textContent = detail.message || 'توقفت نقطة الاتصال المحلية.';
   } else if (detail.type === 'wifi-direct-status') {
     $('wifiDirectStatus').textContent = detail.message || 'تحديث حالة Wi‑Fi Direct.';
+  } else if (detail.type === 'wifi-direct-contact-found') {
+    if (/^[a-zA-Z0-9_-]{16,80}$/.test(String(detail.clientId || '')) && detail.clientId !== clientId) {
+      const known = contacts.find(contact => contact.clientId === detail.clientId);
+      contacts = [{
+        clientId: detail.clientId,
+        name: known?.name || String(detail.name || 'هاتف Android').replace(/[\r\n\0]/g, ' ').slice(0, 40),
+        platform: 'android',
+        online: peerSockets.has(detail.clientId)
+      }, ...contacts.filter(contact => contact.clientId !== detail.clientId)];
+      persistAndroidContacts();
+      renderChatOptions();
+      refreshMembers();
+    }
+    if (currentChat === `user:${detail.clientId}`) $('wifiDirectStatus').textContent = `عُثر على ${detail.name || 'جهة الاتصال'}؛ جارٍ إعداد الاتصال المباشر…`;
   } else if (detail.type === 'wifi-direct-peers') {
     const list = $('wifiDirectPeerList');
     list.replaceChildren(new Option('اختر هاتفًا قريبًا', ''));
@@ -559,6 +613,12 @@ window.wasel.onWifiEvent?.(event => {
 });
 
 if (window.FURSAN_ANDROID) {
+  const discovery = window.wasel.startWifiDirectDiscovery?.(clientId, myName) || 'unavailable';
+  if (typeof discovery === 'string' && discovery.startsWith('error:')) {
+    $('wifiDirectStatus').textContent = discovery.slice(6);
+  } else if (discovery === 'unavailable') {
+    $('wifiDirectStatus').textContent = 'اكتشاف Wi‑Fi Direct التلقائي غير متاح في هذه النسخة.';
+  }
   const localAddresses = window.wasel.getLocalWifiAddresses?.() || '';
   $('wifiLocalAddresses').textContent = localAddresses
     ? `عناوين هذا الهاتف: ${localAddresses} · المنفذ 43821`
