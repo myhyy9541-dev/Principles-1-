@@ -1,7 +1,7 @@
 package com.fursan.lan.android;
 
 import android.content.Context;
-import android.net.wifi.DhcpInfo;
+import android.net.DhcpInfo;
 import android.net.wifi.WifiManager;
 import android.os.Build;
 import android.util.Log;
