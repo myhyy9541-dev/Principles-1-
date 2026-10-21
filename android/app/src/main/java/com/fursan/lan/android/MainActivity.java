@@ -9,9 +9,6 @@ import android.app.DownloadManager;
 import android.content.ClipData;
 import android.content.Intent;
 import android.content.pm.PackageManager;
-import android.net.ConnectivityManager;
-import android.net.Network;
-import android.net.NetworkCapabilities;
 import android.net.Uri;
 import android.net.wifi.WifiManager;
 import android.os.Bundle;
@@ -57,13 +54,11 @@ public final class MainActivity extends Activity implements PeerDiscovery.Listen
     private PeerDiscovery discovery;
     private volatile WifiPeerService wifiPeerService;
     private volatile BluetoothPeerService bluetoothService;
-    private ConnectivityManager connectivityManager;
     private WifiManager.MulticastLock multicastLock;
     private ValueCallback<Uri[]> fileChooserCallback;
     private PermissionRequest pendingMediaRequest;
     private String[] pendingWebResources = new String[0];
     private boolean pageReady;
-    private boolean processBoundToWifi;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -178,10 +173,6 @@ public final class MainActivity extends Activity implements PeerDiscovery.Listen
     private void startDiscovery() {
         if (discovery != null) return;
         try {
-            if (!bindToWifiNetwork()) {
-                dispatchNotice("اتصل بشبكة Wi‑Fi محلية لاكتشاف أقران فرسان لان.");
-                return;
-            }
             WifiManager wifi = (WifiManager) getApplicationContext().getSystemService(WIFI_SERVICE);
             if (wifi != null) {
                 multicastLock = wifi.createMulticastLock("fursan-lan-wifi-discovery");
@@ -190,7 +181,7 @@ public final class MainActivity extends Activity implements PeerDiscovery.Listen
             }
             discovery = new PeerDiscovery(this);
             discovery.start();
-            WifiPeerService service = new WifiPeerService(this, new WifiPeerService.Listener() {
+            WifiPeerService service = new WifiPeerService(new WifiPeerService.Listener() {
                 @Override public void onWifiPeerConnected(String address) {
                     JSONObject detail = new JSONObject();
                     try { detail.put("address", address); } catch (Exception ignored) { return; }
@@ -222,19 +213,6 @@ public final class MainActivity extends Activity implements PeerDiscovery.Listen
         } catch (Exception error) {
             dispatchNotice("تعذر تشغيل اتصال Wi‑Fi المباشر: " + error.getMessage());
         }
-    }
-
-    private boolean bindToWifiNetwork() {
-        connectivityManager = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
-        if (connectivityManager == null) return false;
-        for (Network network : connectivityManager.getAllNetworks()) {
-            NetworkCapabilities capabilities = connectivityManager.getNetworkCapabilities(network);
-            if (capabilities != null && capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
-                processBoundToWifi = connectivityManager.bindProcessToNetwork(network);
-                if (processBoundToWifi) return true;
-            }
-        }
-        return false;
     }
 
     private boolean isKnownPeerFileUrl(Uri uri) {
@@ -420,6 +398,20 @@ public final class MainActivity extends Activity implements PeerDiscovery.Listen
 
     private final class WifiJsBridge {
         @JavascriptInterface
+        public String localAddresses() {
+            WifiPeerService service = wifiPeerService;
+            return service == null ? "" : service.getLocalAddresses();
+        }
+
+        @JavascriptInterface
+        public String connectManual(String address) {
+            WifiPeerService service = wifiPeerService;
+            if (service == null) return "error:خدمة الاتصال المباشر غير جاهزة؛ أعد فتح التطبيق.";
+            try { service.connectManually(address == null ? "" : address.trim()); return "connecting"; }
+            catch (Exception error) { return "error:" + error.getMessage(); }
+        }
+
+        @JavascriptInterface
         public String connect(String address, String port, String instanceId) {
             WifiPeerService service = wifiPeerService;
             if (service == null) return "error:خدمة Wi‑Fi المباشرة غير جاهزة؛ تحقق من اتصال Wi‑Fi ثم أعد فتح التطبيق.";
@@ -556,7 +548,6 @@ public final class MainActivity extends Activity implements PeerDiscovery.Listen
         if (activeWifi != null) activeWifi.close();
         if (discovery != null) discovery.close();
         if (multicastLock != null && multicastLock.isHeld()) multicastLock.release();
-        if (processBoundToWifi && connectivityManager != null) connectivityManager.bindProcessToNetwork(null);
         if (fileChooserCallback != null) fileChooserCallback.onReceiveValue(null);
         if (webView != null) {
             webView.stopLoading();

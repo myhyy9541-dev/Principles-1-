@@ -58,6 +58,12 @@
         <button id="newGroupMobileBtn" class="call-control mobile-only" type="button">＋ مجموعة</button>
       </div>
       <div id="peerBanner" class="banner hidden"><b>نقطة هذا الجهاز جاهزة</b><span id="peerAddress"></span></div>
+      <section id="wifiPeerPanel" class="wifi-peer-panel hidden" aria-label="ربط هاتف Android عبر Wi-Fi">
+        <div><b>ربط هاتف Android مباشرةً</b><small id="wifiLocalAddresses">عناوين هذا الهاتف: جارٍ الفحص…</small></div>
+        <input id="wifiPeerAddress" inputmode="decimal" autocomplete="off" placeholder="عنوان الهاتف الآخر، مثال 192.168.49.2" aria-label="عنوان IP للهاتف الآخر">
+        <button id="wifiPeerConnect" class="call-control" type="button">اتصال مباشر</button>
+        <small>على الهاتف الآخر افتح تفاصيل الشبكة لقراءة عنوان IP. المنفذ المباشر 43821.</small>
+      </section>
       <section id="bluetoothPanel" class="bluetooth-panel hidden" aria-label="إعداد اتصال Bluetooth">
         <div class="bluetooth-copy"><b>اتصال Bluetooth Classic مباشر</b><span id="bluetoothHelp">اقرن الجهازين من إعدادات النظام أولاً؛ الملفات والرسائل تنتقل عبر RFCOMM.</span></div>
         <select id="bluetoothDeviceList" aria-label="الأجهزة المقترنة أو منافذ COM"><option value="">حدّث قائمة الأجهزة المقترنة</option></select>

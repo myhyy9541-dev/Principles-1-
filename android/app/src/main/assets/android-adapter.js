@@ -21,6 +21,8 @@
     stopBluetooth: () => window.FursanBluetooth?.stop(),
     onBluetoothEvent: callback => listen('fursan-bt-event', callback),
     connectWifiPeer: (address, port, instanceId) => window.FursanWifiPeer?.connect(address, String(port), instanceId) || 'unavailable',
+    getLocalWifiAddresses: () => window.FursanWifiPeer?.localAddresses() || '',
+    connectWifiPeerManually: address => window.FursanWifiPeer?.connectManual(address) || 'unavailable',
     sendWifiFrame: (address, frame) => window.FursanWifiPeer?.send(address, JSON.stringify(frame)) || false,
     disconnectWifiPeer: address => window.FursanWifiPeer?.disconnect(address),
     onWifiEvent: callback => listen('fursan-wifi-event', callback)

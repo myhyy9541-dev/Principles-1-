@@ -3,9 +3,17 @@
 .bluetooth-copy span{color:#829391;font-size:10px}
 .bluetooth-panel select{min-width:190px;max-width:35vw;padding:6px 9px;border:1px solid #d4e3de;border-radius:8px;background:white;color:#38504e;font:inherit}
 #bluetoothState{color:#43836d;font-size:10px}
+.wifi-peer-panel{display:flex;align-items:center;gap:8px;padding:9px 30px;background:#eef5fb;border-bottom:1px solid #dce8f1;color:#36566d;font-size:11px;flex-wrap:wrap}
+.wifi-peer-panel>div{display:flex;flex-direction:column;gap:3px;min-width:200px;flex:1}
+.wifi-peer-panel small{color:#71899a;font-size:10px}
+.wifi-peer-panel input{min-width:190px;max-width:40vw;padding:7px 9px;border:1px solid #cddce8;border-radius:8px;background:#fff;color:#294457;font:inherit;direction:ltr;text-align:left}
 @media(max-width:640px){
   .bluetooth-panel{padding:7px 8px;gap:5px}
   .bluetooth-copy{min-width:100%;flex-basis:100%}
   .bluetooth-panel select{min-width:0;flex:1;max-width:none;padding:5px;font-size:10px}
   .bluetooth-panel .call-control{padding:5px 6px;font-size:9px}
+  .wifi-peer-panel{padding:7px 8px;gap:5px}
+  .wifi-peer-panel>div{min-width:100%;flex-basis:100%}
+  .wifi-peer-panel input{min-width:0;max-width:none;flex:1;padding:5px;font-size:10px}
+  .wifi-peer-panel .call-control{padding:5px 6px;font-size:9px}
 }

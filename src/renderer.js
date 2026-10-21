@@ -495,6 +495,29 @@ window.wasel.onWifiEvent?.(event => {
   }
 });
 
+if (window.FURSAN_ANDROID) {
+  $('wifiPeerPanel')?.classList.remove('hidden');
+  const localAddresses = window.wasel.getLocalWifiAddresses?.() || '';
+  $('wifiLocalAddresses').textContent = localAddresses
+    ? `عناوين هذا الهاتف: ${localAddresses} · المنفذ 43821`
+    : 'لم يظهر عنوان شبكة محلية بعد؛ اتصل بنقطة اتصال أو Wi‑Fi Direct ثم أعد فتح التطبيق.';
+  $('wifiPeerConnect').onclick = () => {
+    const address = $('wifiPeerAddress').value.trim();
+    if (!address) return toast('أدخل عنوان IP للهاتف الآخر كما يظهر في تفاصيل الشبكة.');
+    const result = window.wasel.connectWifiPeerManually(address);
+    if (typeof result === 'string' && result.startsWith('error:')) {
+      $('connectionText').textContent = 'تعذر بدء الاتصال اليدوي عبر Wi‑Fi';
+      toast(result.slice(6));
+    } else {
+      $('connectionText').textContent = `جارٍ الاتصال مباشرةً بالعنوان ${address}:43821…`;
+      toast('بدأ الاتصال المباشر؛ تحقق من أن الهاتف الآخر مفتوح على فرسان لان.');
+    }
+  };
+  $('wifiPeerAddress').addEventListener('keydown', event => {
+    if (event.key === 'Enter') $('wifiPeerConnect').click();
+  });
+}
+
 function sendText() {
   const input = $('messageInput');
   const text = input.value.trim().slice(0, 5000);

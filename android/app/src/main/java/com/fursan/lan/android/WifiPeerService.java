@@ -1,8 +1,5 @@
 package com.fursan.lan.android;
 
-import android.content.Context;
-import android.net.DhcpInfo;
-import android.net.wifi.WifiManager;
 import android.os.Build;
 import android.util.Log;
 
@@ -20,8 +17,12 @@ import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketException;
+import java.net.NetworkInterface;
+import java.net.InterfaceAddress;
 import java.util.Map;
 import java.util.UUID;
+import java.util.Enumeration;
+import java.util.LinkedHashMap;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.RejectedExecutionException;
@@ -47,7 +48,6 @@ final class WifiPeerService implements AutoCloseable {
         void onWifiError(String address, String message);
     }
 
-    private final Context context;
     private final Listener listener;
     private final String instanceId = UUID.randomUUID().toString();
     private final Map<String, PeerConnection> peers = new ConcurrentHashMap<>();
@@ -68,8 +68,7 @@ final class WifiPeerService implements AutoCloseable {
     private Thread acceptThread;
     private DatagramSocket beaconSocket;
 
-    WifiPeerService(Context context, Listener listener) {
-        this.context = context.getApplicationContext();
+    WifiPeerService(Listener listener) {
         this.listener = listener;
     }
 
@@ -138,6 +137,72 @@ final class WifiPeerService implements AutoCloseable {
             throw new IOException("خدمة Wi-Fi مشغولة؛ حاول لاحقاً.", error);
         }
         return true;
+    }
+
+    boolean connectManually(String address) throws IOException {
+        if (!running) throw new IOException("خدمة Wi-Fi المباشرة غير مفعلة.");
+        if (!LanAddressPolicy.isPrivateLanAddress(address)) throw new IOException("أدخل عنوان IPv4 محليًا مثل 192.168.49.2.");
+        if (isLocalAddress(address)) throw new IOException("هذا عنوان الهاتف نفسه؛ أدخل عنوان الهاتف الآخر.");
+        return dial(address, PEER_PORT);
+    }
+
+    private boolean dial(String address, int port) throws IOException {
+        if (peers.containsKey(address) || connecting.putIfAbsent(address, Boolean.TRUE) != null) return true;
+        if (peers.size() + connecting.size() > MAX_PEERS) {
+            connecting.remove(address);
+            throw new IOException("بلغت الحد الأقصى لأجهزة Wi-Fi المتصلة.");
+        }
+        try {
+            ioExecutor.execute(() -> {
+                Socket socket = new Socket();
+                try {
+                    socket.connect(new InetSocketAddress(address, port), 8000);
+                    connecting.remove(address);
+                    attach(socket);
+                    socket = null;
+                } catch (Exception error) {
+                    closeQuietly(socket);
+                    listener.onWifiError(address, "تعذر الاتصال بـ" + address + ":" + port + " مباشرةً: " + safeMessage(error));
+                } finally { connecting.remove(address); }
+            });
+        } catch (RejectedExecutionException error) {
+            connecting.remove(address);
+            throw new IOException("خدمة Wi-Fi مشغولة؛ حاول لاحقاً.", error);
+        }
+        return true;
+    }
+
+    String getLocalAddresses() {
+        StringBuilder result = new StringBuilder();
+        try {
+            Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
+            if (interfaces == null) return "";
+            while (interfaces.hasMoreElements()) {
+                NetworkInterface network = interfaces.nextElement();
+                if (!network.isUp() || network.isLoopback()) continue;
+                Enumeration<InetAddress> addresses = network.getInetAddresses();
+                while (addresses.hasMoreElements()) {
+                    InetAddress address = addresses.nextElement();
+                    String host = address.getHostAddress();
+                    if (!LanAddressPolicy.isPrivateLanAddress(host) || result.toString().contains(host)) continue;
+                    if (result.length() > 0) result.append("، ");
+                    result.append(host);
+                }
+            }
+        } catch (Exception error) { Log.w(TAG, "Could not enumerate local interfaces", error); }
+        return result.toString();
+    }
+
+    private boolean isLocalAddress(String candidate) {
+        try {
+            Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
+            if (interfaces == null) return false;
+            while (interfaces.hasMoreElements()) {
+                Enumeration<InetAddress> addresses = interfaces.nextElement().getInetAddresses();
+                while (addresses.hasMoreElements()) if (candidate.equals(addresses.nextElement().getHostAddress())) return true;
+            }
+        } catch (Exception error) { Log.d(TAG, "Could not compare local address", error); }
+        return false;
     }
 
     boolean send(String address, JSONObject frame) {
@@ -217,13 +282,14 @@ final class WifiPeerService implements AutoCloseable {
     private java.util.List<InetAddress> broadcastAddresses() throws Exception {
         java.util.LinkedHashMap<String, InetAddress> results = new java.util.LinkedHashMap<>();
         results.put("255.255.255.255", InetAddress.getByName("255.255.255.255"));
-        WifiManager wifi = (WifiManager) context.getApplicationContext().getSystemService(Context.WIFI_SERVICE);
-        DhcpInfo dhcp = wifi == null ? null : wifi.getDhcpInfo();
-        if (dhcp != null && dhcp.ipAddress != 0 && dhcp.netmask != 0) {
-            int value = dhcp.ipAddress | ~dhcp.netmask;
-            byte[] address = new byte[]{(byte) value, (byte) (value >>> 8), (byte) (value >>> 16), (byte) (value >>> 24)};
-            InetAddress directed = InetAddress.getByAddress(address);
-            results.put(directed.getHostAddress(), directed);
+        Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
+        if (interfaces != null) while (interfaces.hasMoreElements()) {
+            NetworkInterface network = interfaces.nextElement();
+            if (!network.isUp() || network.isLoopback()) continue;
+            for (InterfaceAddress binding : network.getInterfaceAddresses()) {
+                InetAddress broadcast = binding.getBroadcastAddress();
+                if (broadcast != null) results.put(broadcast.getHostAddress(), broadcast);
+            }
         }
         return new java.util.ArrayList<>(results.values());
     }

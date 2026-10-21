@@ -12,6 +12,8 @@ public final class LanAddressPolicyTest {
         assertTrue(LanAddressPolicy.isPrivateLanAddress("192.168.1.4"));
         assertTrue(LanAddressPolicy.isPrivateLanAddress("172.16.4.8"));
         assertTrue(LanAddressPolicy.isPrivateLanAddress("172.31.4.8"));
+        assertTrue(LanAddressPolicy.isPrivateLanAddress("100.96.0.2"));
+        assertTrue(LanAddressPolicy.isPrivateLanAddress("169.254.10.20"));
         assertTrue(LanAddressPolicy.isPrivateLanAddress("127.0.0.1"));
         assertTrue(LanAddressPolicy.isPrivateLanAddress("localhost"));
     }

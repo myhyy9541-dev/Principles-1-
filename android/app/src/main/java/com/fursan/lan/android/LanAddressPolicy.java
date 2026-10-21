@@ -15,7 +15,10 @@ final class LanAddressPolicy {
                 int value = Integer.parseInt(octet);
                 if (value < 0 || value > 255) return false;
             }
-            return first == 10 || (first == 192 && second == 168) || (first == 172 && second >= 16 && second <= 31);
+            return first == 10 || (first == 192 && second == 168)
+                    || (first == 172 && second >= 16 && second <= 31)
+                    || (first == 100 && second >= 64 && second <= 127)
+                    || (first == 169 && second == 254);
         } catch (NumberFormatException ignored) {
             return false;
         }
