@@ -1,27 +1,46 @@
-.bluetooth-panel{display:flex;align-items:center;gap:8px;padding:9px 30px;background:#f0f8f5;border-bottom:1px solid #deebe7;font-size:11px;color:#45635f;flex-wrap:wrap}
+.connection-settings{flex:none;border-bottom:1px solid #e1e9e9;background:#fbfdfc;color:#45635f;font-size:11px}
+.connection-settings>summary{display:flex;align-items:center;gap:10px;min-height:34px;padding:5px 18px;cursor:pointer;list-style:none}
+.connection-settings>summary::-webkit-details-marker{display:none}
+.connection-settings>summary::before{content:'＋';display:inline-grid;place-items:center;width:18px;height:18px;border-radius:6px;background:#e6f4ef;color:#168365;font-size:13px}
+.connection-settings[open]>summary::before{content:'−'}
+.connection-settings>summary small{margin-inline-start:auto;color:#79918d;font-size:10px}
+.connection-menu-body{display:flex;align-items:flex-start;gap:8px;flex-wrap:wrap;padding:0 18px 8px}
+.connection-mode-picker{display:flex;align-items:center;gap:7px;white-space:nowrap;color:#6d8580;font-size:10px}
+.connection-mode-picker select,.wifi-method-panel select,.bluetooth-panel select{min-width:180px;max-width:55vw;padding:6px 9px;border:1px solid #d4e3de;border-radius:8px;background:#fff;color:#38504e;font:inherit}
+.wifi-peer-panel{flex:1 1 100%;min-width:0;color:#36566d;font-size:11px}
+.wifi-method-panel{display:flex;align-items:center;gap:7px;flex-wrap:wrap;padding:7px 9px;background:#f3f8fa;border:1px solid #e2edf1;border-radius:9px}
+.wifi-method-panel>b{color:#36566d;margin-inline-end:4px}
+.wifi-method-panel small{color:#71899a;font-size:10px}
+.wifi-method-panel input{min-width:190px;max-width:40vw;padding:6px 9px;border:1px solid #cddce8;border-radius:8px;background:#fff;color:#294457;font:inherit;direction:ltr;text-align:left}
+.wifi-method-panel .connection-status{flex-basis:100%}
+.bluetooth-panel{display:flex;align-items:center;gap:8px;flex:1 1 100%;padding:7px 9px;background:#f0f8f5;border:1px solid #deebe7;border-radius:9px;font-size:11px;color:#45635f;flex-wrap:wrap}
 .bluetooth-copy{display:flex;flex-direction:column;gap:2px;min-width:220px;flex:1}
 .bluetooth-copy span{color:#829391;font-size:10px}
-.bluetooth-panel select{min-width:190px;max-width:35vw;padding:6px 9px;border:1px solid #d4e3de;border-radius:8px;background:white;color:#38504e;font:inherit}
+.hotspot-credentials{display:flex;align-items:center;gap:8px 14px;flex-wrap:wrap;flex:1 1 100%;padding:7px 9px;border-radius:8px;background:#fff;border:1px solid #dce8f1;color:#506b79}
+.hotspot-credentials span{font-size:10px}
+.hotspot-credentials small{flex-basis:100%}
+.hotspot-credentials code{direction:ltr;unicode-bidi:plaintext;color:#203e4c;font-size:11px;user-select:all}
+.wifi-pairing-qr{width:148px;height:148px;padding:6px;border:1px solid #dce8f1;border-radius:10px;background:#fff;object-fit:contain}
 #bluetoothState{color:#43836d;font-size:10px}
-.wifi-peer-panel{display:flex;align-items:center;gap:8px;padding:9px 30px;background:#eef5fb;border-bottom:1px solid #dce8f1;color:#36566d;font-size:11px;flex-wrap:wrap}
-.wifi-peer-panel>div{display:flex;flex-direction:column;gap:3px;min-width:200px;flex:1}
-.wifi-peer-panel small{color:#71899a;font-size:10px}
-.wifi-peer-panel input{min-width:190px;max-width:40vw;padding:7px 9px;border:1px solid #cddce8;border-radius:8px;background:#fff;color:#294457;font:inherit;direction:ltr;text-align:left}
-.wifi-pairing-qr{width:176px;height:176px;padding:8px;border:1px solid #dce8f1;border-radius:12px;background:#fff;object-fit:contain}
-.wifi-direct-controls{display:flex;align-items:center;gap:7px;flex-wrap:wrap;flex:1 1 100%}
-.wifi-direct-controls select{min-width:190px;max-width:42vw;padding:7px 9px;border:1px solid #cddce8;border-radius:8px;background:#fff;color:#294457;font:inherit}
-.wifi-direct-controls small{flex-basis:100%;color:#71899a;font-size:10px}
 @media(max-width:640px){
-  .bluetooth-panel{padding:7px 8px;gap:5px}
+  .connection-settings>summary{min-height:31px;padding:4px 9px;font-size:10px}
+  .connection-menu-body{display:block;padding:0 7px 6px}
+  .connection-mode-picker{justify-content:space-between;margin-bottom:5px}
+  .connection-mode-picker select{min-width:0;max-width:72vw;flex:1;padding:5px 7px;font-size:10px}
+  .wifi-peer-panel{font-size:10px}
+  .wifi-method-panel{gap:5px;padding:6px}
+  .wifi-method-panel>b{flex-basis:100%}
+  .wifi-method-panel .call-control,.bluetooth-panel .call-control{padding:5px 6px;font-size:9px}
+  .wifi-method-panel select,.bluetooth-panel select{min-width:0;max-width:none;flex:1;padding:5px;font-size:10px}
+  .wifi-method-panel input{min-width:0;max-width:none;flex:1;padding:5px;font-size:10px}
+  .wifi-method-panel small,.bluetooth-copy span{font-size:9px}
+  .wifi-method-panel .connection-status{line-height:1.45}
+  .bluetooth-panel{padding:6px;gap:5px}
   .bluetooth-copy{min-width:100%;flex-basis:100%}
   .bluetooth-panel select{min-width:0;flex:1;max-width:none;padding:5px;font-size:10px}
-  .bluetooth-panel .call-control{padding:5px 6px;font-size:9px}
-  .wifi-peer-panel{padding:7px 8px;gap:5px}
-  .wifi-peer-panel>div{min-width:100%;flex-basis:100%}
-  .wifi-peer-panel input{min-width:0;max-width:none;flex:1;padding:5px;font-size:10px}
-  .wifi-peer-panel .call-control{padding:5px 6px;font-size:9px}
-  .wifi-pairing-qr{width:152px;height:152px;margin-inline:auto}
-  .wifi-direct-controls{gap:5px}
-  .wifi-direct-controls .call-control{padding:5px 6px;font-size:9px}
-  .wifi-direct-controls select{min-width:0;max-width:none;flex:1;padding:5px;font-size:10px}
+  .wifi-pairing-qr{width:112px;height:112px;margin-inline:auto}
+  .hotspot-credentials{padding:6px;gap:5px 10px}
+  .hotspot-credentials span{font-size:9px}
+  .hotspot-credentials code{font-size:10px}
+  .connection-settings[open] .connection-menu-body{max-height:22dvh;overflow:auto}
 }

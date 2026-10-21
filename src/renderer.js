@@ -418,15 +418,40 @@ async function refreshBluetoothDevices() {
   }
 }
 
-$('bluetoothBtn').onclick = async () => {
-  $('bluetoothPanel').classList.toggle('hidden');
-  if ($('bluetoothPanel').classList.contains('hidden')) return;
+const connectionSettings = $('connectionSettings');
+const connectionMethod = $('connectionMethod');
+function selectConnectionMethod(method) {
+  if (!window.FURSAN_ANDROID && method !== 'bluetooth') method = 'bluetooth';
+  connectionMethod.value = method;
+  $('connectionModeCaption').textContent = connectionMethod.selectedOptions[0]?.textContent || 'الاتصالات';
+  const bluetooth = method === 'bluetooth';
+  $('wifiPeerPanel').classList.toggle('hidden', bluetooth || !window.FURSAN_ANDROID);
+  $('bluetoothPanel').classList.toggle('hidden', !bluetooth);
+  $('wifiDirectMethod').classList.toggle('hidden', method !== 'wifi-direct');
+  $('localHotspotMethod').classList.toggle('hidden', method !== 'local-hotspot');
+  $('existingWifiMethod').classList.toggle('hidden', method !== 'wifi-lan');
+}
+if (!window.FURSAN_ANDROID) {
+  for (const option of connectionMethod.options) if (option.value !== 'bluetooth') option.hidden = true;
+}
+selectConnectionMethod(window.FURSAN_ANDROID ? 'wifi-direct' : 'bluetooth');
+async function activateBluetoothControls() {
   if (window.FURSAN_ANDROID) {
     const result = window.wasel.startBluetooth();
     if (result === 'permission-required') $('bluetoothState').textContent = 'بانتظار إذن Android…';
     else $('bluetoothState').textContent = 'بدء مستمع Bluetooth…';
   }
   await refreshBluetoothDevices();
+}
+connectionMethod.addEventListener('change', async () => {
+  selectConnectionMethod(connectionMethod.value);
+  if (connectionMethod.value === 'bluetooth') await activateBluetoothControls();
+});
+
+$('bluetoothBtn').onclick = async () => {
+  connectionSettings.open = true;
+  selectConnectionMethod('bluetooth');
+  await activateBluetoothControls();
 };
 $('bluetoothRefresh').onclick = async () => {
   if (window.FURSAN_ANDROID) window.wasel.startBluetooth();
@@ -484,6 +509,31 @@ window.wasel.onWifiEvent?.(event => {
   if (detail.type === 'pairing-started') {
     $('connectionText').textContent = `تم مسح رمز النظير؛ جارٍ الاتصال مباشرةً بـ ${detail.address}:43821…`;
     toast('تمت قراءة رمز فرسان لان، جارٍ بدء الاتصال المباشر.');
+  } else if (detail.type === 'local-hotspot-started') {
+    $('wifiHotspotSsid').textContent = detail.ssid || 'غير متاح';
+    $('wifiHotspotPassphrase').textContent = detail.passphrase || 'بدون كلمة مرور';
+    $('wifiHotspotAddresses').textContent = `عناوين هذا الهاتف: ${detail.addresses || 'جارٍ اكتشاف عنوان الشبكة'} · منفذ المراسلة ${detail.port || 43821}`;
+    $('wifiHotspotCredentials').classList.remove('hidden');
+    $('wifiStartHotspot').classList.add('hidden');
+    $('wifiStopHotspot').classList.remove('hidden');
+    $('wifiHotspotQr').classList.remove('hidden');
+    $('wifiHotspotStatus').textContent = detail.message || 'النقطة جاهزة؛ اتصل بها من الهاتف الآخر ثم ارجع إلى التطبيق.';
+    $('connectionText').textContent = 'نقطة اتصال محلية جاهزة؛ بانتظار اتصال الهاتف الآخر';
+    toast('نقطة الاتصال جاهزة. استخدم اسم الشبكة وكلمة المرور على الهاتف الآخر.');
+  } else if (detail.type === 'local-hotspot-status') {
+    $('wifiHotspotStatus').textContent = detail.message || 'جارٍ إنشاء نقطة الاتصال…';
+  } else if (detail.type === 'local-hotspot-failed') {
+    $('wifiHotspotStatus').textContent = detail.message || 'تعذر إنشاء نقطة الاتصال.';
+    $('wifiStartHotspot').classList.remove('hidden');
+    $('wifiStopHotspot').classList.add('hidden');
+    toast(detail.message || 'تعذر إنشاء نقطة الاتصال المحلية.');
+  } else if (detail.type === 'local-hotspot-stopped') {
+    $('wifiHotspotCredentials').classList.add('hidden');
+    $('wifiHotspotQrImage').classList.add('hidden');
+    $('wifiHotspotQr').classList.add('hidden');
+    $('wifiStopHotspot').classList.add('hidden');
+    $('wifiStartHotspot').classList.remove('hidden');
+    $('wifiHotspotStatus').textContent = detail.message || 'توقفت نقطة الاتصال المحلية.';
   } else if (detail.type === 'wifi-direct-status') {
     $('wifiDirectStatus').textContent = detail.message || 'تحديث حالة Wi‑Fi Direct.';
   } else if (detail.type === 'wifi-direct-peers') {
@@ -509,7 +559,6 @@ window.wasel.onWifiEvent?.(event => {
 });
 
 if (window.FURSAN_ANDROID) {
-  $('wifiPeerPanel')?.classList.remove('hidden');
   const localAddresses = window.wasel.getLocalWifiAddresses?.() || '';
   $('wifiLocalAddresses').textContent = localAddresses
     ? `عناوين هذا الهاتف: ${localAddresses} · المنفذ 43821`
@@ -546,6 +595,20 @@ if (window.FURSAN_ANDROID) {
     const address = $('wifiDirectPeerList').value;
     if (!address) return toast('ابحث أولًا ثم اختر هاتفًا من قائمة Wi‑Fi Direct.');
     window.wasel.connectWifiDirectPeer(address);
+  };
+  $('wifiStartHotspot').onclick = () => {
+    $('wifiHotspotStatus').textContent = 'بانتظار إذن Android وبدء النقطة…';
+    const result = window.wasel.startLocalHotspot();
+    if (result === 'unavailable') $('wifiHotspotStatus').textContent = 'إنشاء النقطة المحلية غير متاح في هذه النسخة.';
+  };
+  $('wifiStopHotspot').onclick = () => window.wasel.stopLocalHotspot();
+  $('wifiHotspotQr').onclick = () => {
+    try {
+      const result = JSON.parse(window.wasel.createHotspotWifiQr());
+      if (result.error) return toast(result.error);
+      $('wifiHotspotQrImage').src = `data:image/png;base64,${result.qrPng}`;
+      $('wifiHotspotQrImage').classList.remove('hidden');
+    } catch (error) { toast(`تعذر إنشاء رمز الشبكة: ${error.message}`); }
   };
   $('wifiPeerAddress').addEventListener('keydown', event => {
     if (event.key === 'Enter') $('wifiPeerConnect').click();

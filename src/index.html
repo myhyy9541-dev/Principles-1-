@@ -58,30 +58,61 @@
         <button id="newGroupMobileBtn" class="call-control mobile-only" type="button">＋ مجموعة</button>
       </div>
       <div id="peerBanner" class="banner hidden"><b>نقطة هذا الجهاز جاهزة</b><span id="peerAddress"></span></div>
-      <section id="wifiPeerPanel" class="wifi-peer-panel hidden" aria-label="ربط هاتف Android عبر Wi-Fi">
-        <div><b>ربط هاتف Android مباشرةً</b><small id="wifiLocalAddresses">عناوين هذا الهاتف: جارٍ الفحص…</small></div>
-        <div class="wifi-direct-controls">
-          <button id="wifiDirectCreateGroup" class="call-control" type="button">إنشاء شبكة Wi‑Fi Direct</button>
-          <button id="wifiDirectDiscover" class="call-control" type="button">البحث عن هاتف</button>
-          <select id="wifiDirectPeerList" aria-label="أجهزة Wi‑Fi Direct القريبة"><option value="">اضغط البحث عن هاتف</option></select>
-          <button id="wifiDirectJoin" class="call-control" type="button">انضمام مباشر</button>
-          <small id="wifiDirectStatus" role="status">من هاتف اختر «إنشاء شبكة»، ومن الآخر اختر «البحث عن هاتف» ثم «انضمام مباشر».</small>
+      <details id="connectionSettings" class="connection-settings">
+        <summary><b>خيارات الاتصال</b><small id="connectionModeCaption">Wi‑Fi Direct</small></summary>
+        <div class="connection-menu-body">
+          <label class="connection-mode-picker" for="connectionMethod">طريقة الربط
+            <select id="connectionMethod">
+              <option value="wifi-direct">Wi‑Fi Direct — اتصال مباشر</option>
+              <option value="local-hotspot">نقطة اتصال محلية — دون إنترنت</option>
+              <option value="wifi-lan">شبكة Wi‑Fi قائمة — QR أو عنوان</option>
+              <option value="bluetooth">Bluetooth Classic</option>
+            </select>
+          </label>
+          <section id="wifiPeerPanel" class="wifi-peer-panel hidden" aria-label="خيارات Wi-Fi">
+            <div id="wifiDirectMethod" class="wifi-method-panel">
+              <b>Wi‑Fi Direct</b>
+              <button id="wifiDirectCreateGroup" class="call-control" type="button">إنشاء مجموعة</button>
+              <button id="wifiDirectDiscover" class="call-control" type="button">البحث عن هاتف</button>
+              <select id="wifiDirectPeerList" aria-label="أجهزة Wi‑Fi Direct القريبة"><option value="">اضغط البحث عن هاتف</option></select>
+              <button id="wifiDirectJoin" class="call-control" type="button">انضمام</button>
+              <small id="wifiDirectStatus" class="connection-status" role="status">من هاتف اختر «إنشاء مجموعة»، ومن الآخر ابحث ثم انضم.</small>
+            </div>
+            <div id="localHotspotMethod" class="wifi-method-panel hidden">
+              <b>نقطة اتصال محلية</b>
+              <button id="wifiStartHotspot" class="call-control" type="button">إنشاء نقطة اتصال</button>
+              <button id="wifiStopHotspot" class="call-control hidden" type="button">إيقاف النقطة</button>
+              <button id="wifiHotspotQr" class="call-control hidden" type="button">رمز الانضمام للشبكة</button>
+              <div id="wifiHotspotCredentials" class="hotspot-credentials hidden">
+                <span>اسم الشبكة <code id="wifiHotspotSsid" dir="ltr"></code></span>
+                <span>كلمة المرور <code id="wifiHotspotPassphrase" dir="ltr"></code></span>
+                <span id="wifiHotspotAddresses"></span>
+                <small>اتصل من الهاتف الآخر بهذه الشبكة عبر إعدادات Wi‑Fi أو امسح رمز الشبكة بكاميرته، ثم ارجع إلى فرسان لان.</small>
+              </div>
+              <img id="wifiHotspotQrImage" class="wifi-pairing-qr hidden" alt="رمز اتصال الهاتف الآخر بنقطة الاتصال">
+              <small id="wifiHotspotStatus" class="connection-status" role="status">النقطة محلية ولا توفر إنترنت. بعد اتصال الهاتف الآخر، استخدم خيار «شبكة Wi‑Fi قائمة» للمراسلة.</small>
+            </div>
+            <div id="existingWifiMethod" class="wifi-method-panel hidden">
+              <b>استخدام Wi‑Fi متصل بالفعل</b>
+              <small id="wifiLocalAddresses">عناوين هذا الهاتف: جارٍ الفحص…</small>
+              <button id="wifiShowPairingQr" class="call-control" type="button">إنشاء رمز فرسان لان</button>
+              <button id="wifiScanPairingQr" class="call-control" type="button">مسح رمز النظير</button>
+              <input id="wifiPeerAddress" inputmode="decimal" autocomplete="off" placeholder="عنوان الهاتف الآخر، مثال 192.168.49.2" aria-label="عنوان IP للهاتف الآخر">
+              <button id="wifiPeerConnect" class="call-control" type="button">اتصال مباشر</button>
+              <img id="wifiPairingQrImage" class="wifi-pairing-qr hidden" alt="رمز اقتران فرسان لان لهذا الهاتف">
+              <small id="wifiPairingHelp">امسح رمز فرسان لان من الهاتف الآخر؛ يلزم أن يكونا على شبكة تسمح باتصالات الأجهزة. المنفذ 43821.</small>
+            </div>
+          </section>
+          <section id="bluetoothPanel" class="bluetooth-panel hidden" aria-label="إعداد اتصال Bluetooth">
+            <div class="bluetooth-copy"><b>اتصال Bluetooth Classic مباشر</b><span id="bluetoothHelp">اقرن الجهازين من إعدادات النظام أولاً؛ الملفات والرسائل تنتقل عبر RFCOMM.</span></div>
+            <select id="bluetoothDeviceList" aria-label="الأجهزة المقترنة أو منافذ COM"><option value="">حدّث قائمة الأجهزة المقترنة</option></select>
+            <button id="bluetoothRefresh" class="call-control" type="button">تحديث</button>
+            <button id="bluetoothConnect" class="call-control" type="button">اتصال</button>
+            <button id="bluetoothDisconnect" class="call-control" type="button">قطع</button>
+            <span id="bluetoothState" role="status">غير متصل</span>
+          </section>
         </div>
-        <button id="wifiShowPairingQr" class="call-control" type="button">إنشاء رمز QR وعرضه</button>
-        <button id="wifiScanPairingQr" class="call-control" type="button">مسح رمز الهاتف الآخر</button>
-        <input id="wifiPeerAddress" inputmode="decimal" autocomplete="off" placeholder="عنوان الهاتف الآخر، مثال 192.168.49.2" aria-label="عنوان IP للهاتف الآخر">
-        <button id="wifiPeerConnect" class="call-control" type="button">اتصال مباشر</button>
-        <img id="wifiPairingQrImage" class="wifi-pairing-qr hidden" alt="رمز اقتران فرسان لان لهذا الهاتف">
-        <small id="wifiPairingHelp">اعرض QR على هاتف وامسحه بالآخر. يتطلب اتصال Wi‑Fi محليًا يسمح باتصال الجهازين؛ QR لا ينشئ شبكة جديدة. المنفذ 43821.</small>
-      </section>
-      <section id="bluetoothPanel" class="bluetooth-panel hidden" aria-label="إعداد اتصال Bluetooth">
-        <div class="bluetooth-copy"><b>اتصال Bluetooth Classic مباشر</b><span id="bluetoothHelp">اقرن الجهازين من إعدادات النظام أولاً؛ الملفات والرسائل تنتقل عبر RFCOMM.</span></div>
-        <select id="bluetoothDeviceList" aria-label="الأجهزة المقترنة أو منافذ COM"><option value="">حدّث قائمة الأجهزة المقترنة</option></select>
-        <button id="bluetoothRefresh" class="call-control" type="button">تحديث</button>
-        <button id="bluetoothConnect" class="call-control" type="button">اتصال</button>
-        <button id="bluetoothDisconnect" class="call-control" type="button">قطع</button>
-        <span id="bluetoothState" role="status">غير متصل</span>
-      </section>
+      </details>
 
       <section id="messages" class="messages" aria-live="polite" aria-label="الرسائل">
         <div class="welcome">

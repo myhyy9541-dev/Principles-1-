@@ -11,7 +11,9 @@ import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.net.Uri;
+import android.net.wifi.WifiConfiguration;
 import android.net.wifi.WifiManager;
+import android.net.wifi.SoftApConfiguration;
 import android.os.Bundle;
 import android.os.Build;
 import android.os.Environment;
@@ -68,6 +70,11 @@ public final class MainActivity extends Activity implements PeerDiscovery.Listen
     private PeerDiscovery discovery;
     private volatile WifiPeerService wifiPeerService;
     private volatile WifiDirectController wifiDirectController;
+    private volatile WifiManager.LocalOnlyHotspotReservation localHotspotReservation;
+    private volatile WifiManager.LocalOnlyHotspotCallback localHotspotCallback;
+    private volatile boolean localHotspotStarting;
+    private volatile String localHotspotSsid = "";
+    private volatile String localHotspotPassphrase = "";
     private volatile BluetoothPeerService bluetoothService;
     private WifiManager.MulticastLock multicastLock;
     private ValueCallback<Uri[]> fileChooserCallback;
@@ -275,14 +282,166 @@ public final class MainActivity extends Activity implements PeerDiscovery.Listen
                 ? Manifest.permission.NEARBY_WIFI_DEVICES : Manifest.permission.ACCESS_FINE_LOCATION;
     }
 
+    private void startLocalHotspot() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            dispatchHotspotEvent("local-hotspot-failed", "نقطة الاتصال المحلية تتطلب Android 8.0 أو أحدث.");
+            return;
+        }
+        synchronized (this) {
+            if (localHotspotReservation != null) {
+                dispatchHotspotStarted();
+                return;
+            }
+            if (localHotspotStarting) {
+                dispatchHotspotEvent("local-hotspot-status", "جارٍ إنشاء نقطة الاتصال…");
+                return;
+            }
+            localHotspotStarting = true;
+        }
+        WifiManager manager = (WifiManager) getApplicationContext().getSystemService(WIFI_SERVICE);
+        if (manager == null) {
+            localHotspotStarting = false;
+            dispatchHotspotEvent("local-hotspot-failed", "خدمة Wi‑Fi غير متاحة على هذا الهاتف.");
+            return;
+        }
+        WifiManager.LocalOnlyHotspotCallback callback = new WifiManager.LocalOnlyHotspotCallback() {
+            @Override public void onStarted(WifiManager.LocalOnlyHotspotReservation reservation) {
+                if (localHotspotCallback != this || isFinishing() || isDestroyed()) {
+                    reservation.close();
+                    return;
+                }
+                localHotspotReservation = reservation;
+                localHotspotStarting = false;
+                try {
+                    String ssid;
+                    String passphrase;
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                        SoftApConfiguration config = reservation.getSoftApConfiguration();
+                        ssid = config == null ? "" : config.getSsid();
+                        passphrase = config == null ? "" : config.getPassphrase();
+                    } else {
+                        @SuppressWarnings("deprecation") WifiConfiguration config = reservation.getWifiConfiguration();
+                        ssid = config == null ? "" : config.SSID;
+                        passphrase = config == null ? "" : normalizeHotspotSsid(config.preSharedKey);
+                    }
+                    localHotspotSsid = normalizeHotspotSsid(ssid);
+                    localHotspotPassphrase = passphrase == null ? "" : passphrase;
+                    if (localHotspotSsid.isEmpty()) throw new IllegalStateException("لم يعرض Android اسم نقطة الاتصال.");
+                    dispatchHotspotStarted();
+                } catch (Exception error) {
+                    localHotspotReservation = null;
+                    localHotspotCallback = null;
+                    localHotspotSsid = "";
+                    localHotspotPassphrase = "";
+                    reservation.close();
+                    dispatchHotspotEvent("local-hotspot-failed", "أُنشئت النقطة لكن تعذر قراءة بياناتها: " + safeErrorMessage(error));
+                }
+            }
+
+            @Override public void onStopped() {
+                if (localHotspotCallback != this) return;
+                localHotspotReservation = null;
+                localHotspotCallback = null;
+                localHotspotStarting = false;
+                localHotspotSsid = "";
+                localHotspotPassphrase = "";
+                dispatchHotspotEvent("local-hotspot-stopped", "توقفت نقطة الاتصال المحلية.");
+            }
+
+            @Override public void onFailed(int reason) {
+                if (localHotspotCallback != this) return;
+                localHotspotReservation = null;
+                localHotspotCallback = null;
+                localHotspotStarting = false;
+                dispatchHotspotEvent("local-hotspot-failed", hotspotFailureMessage(reason));
+            }
+        };
+        localHotspotCallback = callback;
+        try {
+            manager.startLocalOnlyHotspot(callback, mainHandler);
+            dispatchHotspotEvent("local-hotspot-status", "طلب Android إنشاء نقطة اتصال محلية…");
+        } catch (SecurityException error) {
+            localHotspotStarting = false;
+            localHotspotCallback = null;
+            dispatchHotspotEvent("local-hotspot-failed", "اسمح بإذن الأجهزة القريبة ثم أعد المحاولة.");
+        } catch (RuntimeException error) {
+            localHotspotStarting = false;
+            localHotspotCallback = null;
+            dispatchHotspotEvent("local-hotspot-failed", "تعذر طلب نقطة الاتصال: " + safeErrorMessage(error));
+        }
+    }
+
+    private void stopLocalHotspot() {
+        WifiManager.LocalOnlyHotspotReservation reservation = localHotspotReservation;
+        localHotspotReservation = null;
+        localHotspotCallback = null;
+        localHotspotStarting = false;
+        localHotspotSsid = "";
+        localHotspotPassphrase = "";
+        if (reservation != null) {
+            try { reservation.close(); }
+            catch (Exception error) { Log.w(TAG, "Could not close local hotspot reservation", error); }
+        }
+        dispatchHotspotEvent("local-hotspot-stopped", "أوقفت نقطة الاتصال المحلية.");
+    }
+
+    private void dispatchHotspotStarted() {
+        JSONObject detail = new JSONObject();
+        WifiPeerService service = wifiPeerService;
+        try {
+            detail.put("ssid", localHotspotSsid);
+            detail.put("passphrase", localHotspotPassphrase);
+            detail.put("addresses", service == null ? "" : service.getLocalAddresses());
+            detail.put("port", WifiPeerService.PEER_PORT);
+            detail.put("message", "نقطة الاتصال المحلية جاهزة. وصّل الهاتف الآخر باسم الشبكة وكلمة المرور ثم عُد إلى التطبيق.");
+        } catch (Exception ignored) { }
+        dispatchWifiEvent("local-hotspot-started", detail);
+    }
+
+    private void dispatchHotspotEvent(String type, String message) {
+        JSONObject detail = new JSONObject();
+        try { detail.put("message", message); } catch (Exception ignored) { }
+        dispatchWifiEvent(type, detail);
+    }
+
+    private static String normalizeHotspotSsid(String ssid) {
+        if (ssid == null) return "";
+        String value = ssid.trim();
+        if (value.length() >= 2 && value.startsWith("\"") && value.endsWith("\"")) {
+            value = value.substring(1, value.length() - 1);
+        }
+        return value;
+    }
+
+    private static String hotspotFailureMessage(int reason) {
+        if (reason == WifiManager.LocalOnlyHotspotCallback.ERROR_INCOMPATIBLE_MODE) {
+            return "تعذر إنشاء النقطة لأن Wi‑Fi Direct أو وضع Wi‑Fi آخر يستخدم الراديو؛ أوقف الاتصال الحالي ثم أعد المحاولة.";
+        }
+        if (reason == WifiManager.LocalOnlyHotspotCallback.ERROR_TETHERING_DISALLOWED) {
+            return "سياسة الهاتف أو الشركة تمنع إنشاء نقطة اتصال محلية.";
+        }
+        if (reason == WifiManager.LocalOnlyHotspotCallback.ERROR_NO_CHANNEL) {
+            return "لا توجد قناة Wi‑Fi متاحة الآن؛ أوقف نقطة اتصال أخرى أو أعد المحاولة.";
+        }
+        return "رفض Android إنشاء نقطة الاتصال المحلية (الخطأ " + reason + "). أوقف hotspot أو Wi‑Fi Direct آخر ثم أعد المحاولة.";
+    }
+
+    private static String safeErrorMessage(Exception error) {
+        return error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage();
+    }
+
     private String runWifiDirectAction(String action, String peerAddress) {
-        if (wifiDirectController == null) startWifiDirectController();
+        if (!"hotspot-start".equals(action) && wifiDirectController == null) startWifiDirectController();
         String permission = requiredWifiDirectPermission();
         if (checkSelfPermission(permission) != PackageManager.PERMISSION_GRANTED) {
             pendingWifiDirectAction = action;
             pendingWifiDirectPeer = peerAddress;
             requestPermissions(new String[]{permission}, WIFI_DIRECT_PERMISSION_REQUEST);
             return "permission-required";
+        }
+        if ("hotspot-start".equals(action)) {
+            startLocalHotspot();
+            return "started";
         }
         WifiDirectController controller = wifiDirectController;
         if (controller == null) return "error:تعذر تهيئة Wi‑Fi Direct.";
@@ -401,6 +560,23 @@ public final class MainActivity extends Activity implements PeerDiscovery.Listen
         mainHandler.post(() -> { if (webView != null && pageReady) webView.evaluateJavascript(script, null); });
     }
 
+    private String encodeQrPngBase64(String text) throws Exception {
+        Map<EncodeHintType, Object> hints = new EnumMap<>(EncodeHintType.class);
+        hints.put(EncodeHintType.MARGIN, 2);
+        BitMatrix matrix = new MultiFormatWriter().encode(text, BarcodeFormat.QR_CODE, QR_SIZE, QR_SIZE, hints);
+        Bitmap bitmap = Bitmap.createBitmap(QR_SIZE, QR_SIZE, Bitmap.Config.ARGB_8888);
+        try {
+            for (int y = 0; y < QR_SIZE; y++) for (int x = 0; x < QR_SIZE; x++) {
+                bitmap.setPixel(x, y, matrix.get(x, y) ? 0xFF102D32 : 0xFFFFFFFF);
+            }
+            ByteArrayOutputStream output = new ByteArrayOutputStream();
+            bitmap.compress(Bitmap.CompressFormat.PNG, 100, output);
+            return Base64.encodeToString(output.toByteArray(), Base64.NO_WRAP);
+        } finally {
+            bitmap.recycle();
+        }
+    }
+
     @Override
     public void onPeerConnected(String address, String name) {
         JSONObject detail = new JSONObject();
@@ -501,6 +677,30 @@ public final class MainActivity extends Activity implements PeerDiscovery.Listen
     }
 
     private final class WifiJsBridge {
+        @JavascriptInterface
+        public String startLocalHotspot() {
+            runOnUiThread(() -> runWifiDirectAction("hotspot-start", null));
+            return "starting";
+        }
+
+        @JavascriptInterface
+        public void stopLocalHotspot() {
+            runOnUiThread(MainActivity.this::stopLocalHotspot);
+        }
+
+        @JavascriptInterface
+        public String createHotspotWifiQr() {
+            JSONObject result = new JSONObject();
+            try {
+                if (localHotspotSsid.isEmpty()) throw new IllegalStateException("أنشئ نقطة الاتصال المحلية أولًا.");
+                result.put("qrPng", encodeQrPngBase64(WifiHotspotQr.payload(localHotspotSsid, localHotspotPassphrase)));
+                result.put("ssid", localHotspotSsid);
+            } catch (Exception error) {
+                try { result.put("error", safeErrorMessage(error)); } catch (Exception ignored) { }
+            }
+            return result.toString();
+        }
+
         @JavascriptInterface
         public String createWifiDirectGroup() {
             runOnUiThread(() -> runWifiDirectAction("create", null));
@@ -670,8 +870,8 @@ public final class MainActivity extends Activity implements PeerDiscovery.Listen
                 runWifiDirectAction(action, peerAddress);
             } else {
                 dispatchNotice(Build.VERSION.SDK_INT >= 33
-                        ? "يلزم السماح بإذن الأجهزة القريبة لاستخدام Wi‑Fi Direct."
-                        : "يلزم إذن الموقع لاكتشاف Wi‑Fi Direct على إصدارات Android القديمة؛ لا يستخدم فرسان لان موقعك.");
+                        ? "يلزم السماح بإذن الأجهزة القريبة لاستخدام Wi‑Fi Direct أو نقطة الاتصال المحلية."
+                        : "يلزم إذن الموقع للاتصال اللاسلكي على إصدار Android القديم؛ لا يستخدم فرسان لان موقعك.");
             }
             return;
         }
@@ -741,6 +941,7 @@ public final class MainActivity extends Activity implements PeerDiscovery.Listen
 
     @Override
     protected void onDestroy() {
+        stopLocalHotspot();
         WifiDirectController activeWifiDirect = wifiDirectController;
         wifiDirectController = null;
         if (activeWifiDirect != null) activeWifiDirect.close();

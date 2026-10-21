@@ -28,6 +28,9 @@
     createWifiDirectGroup: () => window.FursanWifiPeer?.createWifiDirectGroup() || 'unavailable',
     discoverWifiDirectPeers: () => window.FursanWifiPeer?.discoverWifiDirectPeers() || 'unavailable',
     connectWifiDirectPeer: address => window.FursanWifiPeer?.connectWifiDirectPeer(address) || 'unavailable',
+    startLocalHotspot: () => window.FursanWifiPeer?.startLocalHotspot() || 'unavailable',
+    stopLocalHotspot: () => window.FursanWifiPeer?.stopLocalHotspot(),
+    createHotspotWifiQr: () => window.FursanWifiPeer?.createHotspotWifiQr() || '{"error":"تعذر إنشاء رمز الشبكة."}',
     sendWifiFrame: (address, frame) => window.FursanWifiPeer?.send(address, JSON.stringify(frame)) || false,
     disconnectWifiPeer: address => window.FursanWifiPeer?.disconnect(address),
     onWifiEvent: callback => listen('fursan-wifi-event', callback)
