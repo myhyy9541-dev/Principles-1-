@@ -481,7 +481,10 @@ window.wasel.onBluetoothEvent(event => {
 window.wasel.onWifiEvent?.(event => {
   const detail = event?.detail ? { ...event.detail, type: event.type } : event;
   if (!detail) return;
-  if (detail.type === 'peer-connected') {
+  if (detail.type === 'pairing-started') {
+    $('connectionText').textContent = `تم مسح رمز النظير؛ جارٍ الاتصال مباشرةً بـ ${detail.address}:43821…`;
+    toast('تمت قراءة رمز فرسان لان، جارٍ بدء الاتصال المباشر.');
+  } else if (detail.type === 'peer-connected') {
     registerBluetoothSocket(detail.address, null, true, 'wifi-frame-v1');
     $('connectionText').textContent = `متصل مباشرةً عبر Wi‑Fi · ${detail.address}`;
   } else if (detail.type === 'frame') {
@@ -512,6 +515,20 @@ if (window.FURSAN_ANDROID) {
       $('connectionText').textContent = `جارٍ الاتصال مباشرةً بالعنوان ${address}:43821…`;
       toast('بدأ الاتصال المباشر؛ تحقق من أن الهاتف الآخر مفتوح على فرسان لان.');
     }
+  };
+  $('wifiShowPairingQr').onclick = () => {
+    try {
+      const result = JSON.parse(window.wasel.createWifiPairingQr());
+      if (result.error) return toast(result.error);
+      $('wifiPairingQrImage').src = `data:image/png;base64,${result.qrPng}`;
+      $('wifiPairingQrImage').classList.remove('hidden');
+      $('wifiPeerAddress').value = result.address || '';
+      $('wifiPairingHelp').textContent = `اعرض الرمز على الهاتف الآخر وامسحه من فرسان لان. عنوان هذه الواجهة ${result.address}:${result.port}؛ الاتصال محلي ومباشر.`;
+    } catch (error) { toast(`تعذر إنشاء رمز الاقتران: ${error.message}`); }
+  };
+  $('wifiScanPairingQr').onclick = () => {
+    const state = window.wasel.scanWifiPairingQr();
+    if (state === 'unavailable') toast('ماسح QR غير متاح في هذه النسخة.');
   };
   $('wifiPeerAddress').addEventListener('keydown', event => {
     if (event.key === 'Enter') $('wifiPeerConnect').click();

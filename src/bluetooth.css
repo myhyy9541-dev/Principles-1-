@@ -7,6 +7,7 @@
 .wifi-peer-panel>div{display:flex;flex-direction:column;gap:3px;min-width:200px;flex:1}
 .wifi-peer-panel small{color:#71899a;font-size:10px}
 .wifi-peer-panel input{min-width:190px;max-width:40vw;padding:7px 9px;border:1px solid #cddce8;border-radius:8px;background:#fff;color:#294457;font:inherit;direction:ltr;text-align:left}
+.wifi-pairing-qr{width:176px;height:176px;padding:8px;border:1px solid #dce8f1;border-radius:12px;background:#fff;object-fit:contain}
 @media(max-width:640px){
   .bluetooth-panel{padding:7px 8px;gap:5px}
   .bluetooth-copy{min-width:100%;flex-basis:100%}
@@ -16,4 +17,5 @@
   .wifi-peer-panel>div{min-width:100%;flex-basis:100%}
   .wifi-peer-panel input{min-width:0;max-width:none;flex:1;padding:5px;font-size:10px}
   .wifi-peer-panel .call-control{padding:5px 6px;font-size:9px}
+  .wifi-pairing-qr{width:152px;height:152px;margin-inline:auto}
 }

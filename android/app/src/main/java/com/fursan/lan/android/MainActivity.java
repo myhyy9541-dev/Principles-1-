@@ -9,6 +9,7 @@ import android.app.DownloadManager;
 import android.content.ClipData;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.graphics.Bitmap;
 import android.net.Uri;
 import android.net.wifi.WifiManager;
 import android.os.Bundle;
@@ -17,6 +18,7 @@ import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
+import android.util.Base64;
 import android.view.ViewGroup;
 import android.view.Window;
 import android.webkit.ConsoleMessage;
@@ -34,10 +36,20 @@ import android.widget.Toast;
 
 import androidx.webkit.WebViewAssetLoader;
 
+import com.google.zxing.BarcodeFormat;
+import com.google.zxing.EncodeHintType;
+import com.google.zxing.MultiFormatWriter;
+import com.google.zxing.common.BitMatrix;
+import com.google.zxing.integration.android.IntentIntegrator;
+import com.google.zxing.integration.android.IntentResult;
+
 import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.util.ArrayList;
+import java.util.EnumMap;
+import java.util.Map;
+import java.io.ByteArrayOutputStream;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.nio.charset.StandardCharsets;
@@ -48,6 +60,7 @@ public final class MainActivity extends Activity implements PeerDiscovery.Listen
     private static final int FILE_REQUEST = 7101;
     private static final int MEDIA_REQUEST = 7102;
     private static final int BLUETOOTH_REQUEST = 7103;
+    private static final int QR_SIZE = 480;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final Set<String> knownPeers = ConcurrentHashMap.newKeySet();
     private WebView webView;
@@ -398,6 +411,43 @@ public final class MainActivity extends Activity implements PeerDiscovery.Listen
 
     private final class WifiJsBridge {
         @JavascriptInterface
+        public String createPairingQr() {
+            WifiPeerService service = wifiPeerService;
+            if (service == null) return "{\"error\":\"خدمة Wi-Fi المباشرة غير جاهزة.\"}";
+            try {
+                JSONObject code = PeerPairingCode.create(service.getPairingAddress(), service.getInstanceId());
+                Map<EncodeHintType, Object> hints = new EnumMap<>(EncodeHintType.class);
+                hints.put(EncodeHintType.MARGIN, 2);
+                BitMatrix matrix = new MultiFormatWriter().encode(code.toString(), BarcodeFormat.QR_CODE, QR_SIZE, QR_SIZE, hints);
+                Bitmap bitmap = Bitmap.createBitmap(QR_SIZE, QR_SIZE, Bitmap.Config.ARGB_8888);
+                for (int y = 0; y < QR_SIZE; y++) for (int x = 0; x < QR_SIZE; x++) {
+                    bitmap.setPixel(x, y, matrix.get(x, y) ? 0xFF102D32 : 0xFFFFFFFF);
+                }
+                ByteArrayOutputStream output = new ByteArrayOutputStream();
+                bitmap.compress(Bitmap.CompressFormat.PNG, 100, output);
+                bitmap.recycle();
+                code.put("qrPng", Base64.encodeToString(output.toByteArray(), Base64.NO_WRAP));
+                return code.toString();
+            } catch (Exception error) {
+                JSONObject failure = new JSONObject();
+                try { failure.put("error", error.getMessage() == null ? "تعذر إنشاء رمز الاقتران." : error.getMessage()); }
+                catch (Exception ignored) { }
+                return failure.toString();
+            }
+        }
+
+        @JavascriptInterface
+        public String scanPairingQr() {
+            runOnUiThread(() -> new IntentIntegrator(MainActivity.this)
+                    .setDesiredBarcodeFormats(IntentIntegrator.QR_CODE)
+                    .setPrompt("امسح رمز فرسان لان الظاهر على الهاتف الآخر")
+                    .setBeepEnabled(false)
+                    .setOrientationLocked(false)
+                    .initiateScan());
+            return "scanning";
+        }
+
+        @JavascriptInterface
         public String localAddresses() {
             WifiPeerService service = wifiPeerService;
             return service == null ? "" : service.getLocalAddresses();
@@ -434,6 +484,28 @@ public final class MainActivity extends Activity implements PeerDiscovery.Listen
         public void disconnect(String address) {
             WifiPeerService service = wifiPeerService;
             if (service != null) service.disconnect(address);
+        }
+    }
+
+    private void connectScannedPairingCode(String raw) {
+        WifiPeerService service = wifiPeerService;
+        if (service == null) {
+            JSONObject detail = new JSONObject();
+            try { detail.put("message", "خدمة Wi-Fi المباشرة غير جاهزة؛ أعد فتح التطبيق."); } catch (Exception ignored) { }
+            dispatchWifiEvent("notice", detail);
+            return;
+        }
+        try {
+            String address = PeerPairingCode.parseAddress(raw);
+            service.connectManually(address);
+            JSONObject detail = new JSONObject();
+            detail.put("address", address);
+            dispatchWifiEvent("pairing-started", detail);
+        } catch (Exception error) {
+            JSONObject detail = new JSONObject();
+            try { detail.put("message", error.getMessage() == null ? "تعذر قراءة رمز الاقتران." : error.getMessage()); }
+            catch (Exception ignored) { }
+            dispatchWifiEvent("notice", detail);
         }
     }
 
@@ -496,6 +568,11 @@ public final class MainActivity extends Activity implements PeerDiscovery.Listen
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        IntentResult scan = IntentIntegrator.parseActivityResult(requestCode, resultCode, data);
+        if (scan != null) {
+            if (scan.getContents() != null) connectScannedPairingCode(scan.getContents());
+            return;
+        }
         if (requestCode != FILE_REQUEST || fileChooserCallback == null) return;
         Uri[] results = null;
         if (resultCode == RESULT_OK && data != null) {

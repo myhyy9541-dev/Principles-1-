@@ -19,10 +19,12 @@ import java.net.Socket;
 import java.net.SocketException;
 import java.net.NetworkInterface;
 import java.net.InterfaceAddress;
+import java.net.Inet4Address;
 import java.util.Map;
 import java.util.UUID;
 import java.util.Enumeration;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.RejectedExecutionException;
@@ -173,24 +175,35 @@ final class WifiPeerService implements AutoCloseable {
     }
 
     String getLocalAddresses() {
-        StringBuilder result = new StringBuilder();
+        LinkedHashSet<String> localAddresses = new LinkedHashSet<>();
         try {
             Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
             if (interfaces == null) return "";
             while (interfaces.hasMoreElements()) {
                 NetworkInterface network = interfaces.nextElement();
-                if (!network.isUp() || network.isLoopback()) continue;
-                Enumeration<InetAddress> addresses = network.getInetAddresses();
-                while (addresses.hasMoreElements()) {
-                    InetAddress address = addresses.nextElement();
+                if (!network.isUp() || network.isLoopback() || !isWifiInterface(network.getName())) continue;
+                Enumeration<InetAddress> ipAddresses = network.getInetAddresses();
+                while (ipAddresses.hasMoreElements()) {
+                    InetAddress address = ipAddresses.nextElement();
                     String host = address.getHostAddress();
-                    if (!LanAddressPolicy.isPrivateLanAddress(host) || result.toString().contains(host)) continue;
-                    if (result.length() > 0) result.append("، ");
-                    result.append(host);
+                    if (address instanceof Inet4Address && LanAddressPolicy.isPrivateLanAddress(host)) localAddresses.add(host);
                 }
             }
         } catch (Exception error) { Log.w(TAG, "Could not enumerate local interfaces", error); }
-        return result.toString();
+        return String.join("، ", localAddresses);
+    }
+
+    String getPairingAddress() {
+        String addresses = getLocalAddresses();
+        if (addresses.isEmpty()) return "";
+        return addresses.split("، ", 2)[0];
+    }
+
+    private static boolean isWifiInterface(String name) {
+        if (name == null) return false;
+        String value = name.toLowerCase(java.util.Locale.ROOT);
+        return value.contains("wlan") || value.contains("p2p") || value.contains("softap")
+                || value.equals("ap0") || value.startsWith("swlan");
     }
 
     private boolean isLocalAddress(String candidate) {

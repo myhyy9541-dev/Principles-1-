@@ -60,9 +60,12 @@
       <div id="peerBanner" class="banner hidden"><b>نقطة هذا الجهاز جاهزة</b><span id="peerAddress"></span></div>
       <section id="wifiPeerPanel" class="wifi-peer-panel hidden" aria-label="ربط هاتف Android عبر Wi-Fi">
         <div><b>ربط هاتف Android مباشرةً</b><small id="wifiLocalAddresses">عناوين هذا الهاتف: جارٍ الفحص…</small></div>
+        <button id="wifiShowPairingQr" class="call-control" type="button">إنشاء رمز QR وعرضه</button>
+        <button id="wifiScanPairingQr" class="call-control" type="button">مسح رمز الهاتف الآخر</button>
         <input id="wifiPeerAddress" inputmode="decimal" autocomplete="off" placeholder="عنوان الهاتف الآخر، مثال 192.168.49.2" aria-label="عنوان IP للهاتف الآخر">
         <button id="wifiPeerConnect" class="call-control" type="button">اتصال مباشر</button>
-        <small>على الهاتف الآخر افتح تفاصيل الشبكة لقراءة عنوان IP. المنفذ المباشر 43821.</small>
+        <img id="wifiPairingQrImage" class="wifi-pairing-qr hidden" alt="رمز اقتران فرسان لان لهذا الهاتف">
+        <small id="wifiPairingHelp">اعرض QR على هاتف وامسحه بالآخر. يتطلب اتصال Wi‑Fi محليًا يسمح باتصال الجهازين؛ QR لا ينشئ شبكة جديدة. المنفذ 43821.</small>
       </section>
       <section id="bluetoothPanel" class="bluetooth-panel hidden" aria-label="إعداد اتصال Bluetooth">
         <div class="bluetooth-copy"><b>اتصال Bluetooth Classic مباشر</b><span id="bluetoothHelp">اقرن الجهازين من إعدادات النظام أولاً؛ الملفات والرسائل تنتقل عبر RFCOMM.</span></div>

@@ -64,12 +64,12 @@ jobs:
       - name: Name APK for direct installation
         run: |
           mkdir -p android-dist
-          cp android/app/build/outputs/apk/debug/app-debug.apk android-dist/Fursan-LAN-Android-0.4.0.apk
+          cp android/app/build/outputs/apk/debug/app-debug.apk android-dist/Fursan-LAN-Android-0.5.0.apk
 
       - name: Upload installable APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: fursan-lan-android-apk
-          path: android-dist/Fursan-LAN-Android-0.4.0.apk
+          path: android-dist/Fursan-LAN-Android-0.5.0.apk
           if-no-files-found: error
           retention-days: 30
