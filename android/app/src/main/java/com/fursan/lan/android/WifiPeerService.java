@@ -287,7 +287,7 @@ final class WifiPeerService implements AutoCloseable {
             NetworkInterface network = interfaces.nextElement();
             if (!network.isUp() || network.isLoopback()) continue;
             for (InterfaceAddress binding : network.getInterfaceAddresses()) {
-                InetAddress broadcast = binding.getBroadcastAddress();
+                InetAddress broadcast = binding.getBroadcast();
                 if (broadcast != null) results.put(broadcast.getHostAddress(), broadcast);
             }
         }
