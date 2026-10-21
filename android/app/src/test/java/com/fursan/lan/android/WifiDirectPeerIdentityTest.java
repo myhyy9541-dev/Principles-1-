@@ -28,7 +28,7 @@ public final class WifiDirectPeerIdentityTest {
         assertNull(WifiDirectPeerIdentity.parse(record));
 
         record.put("app", "fursanlan-v1");
-        record.put("clientid", "not-a-valid-peer");
+        record.put("clientid", "not a valid peer");
         assertNull(WifiDirectPeerIdentity.parse(record));
     }
 
