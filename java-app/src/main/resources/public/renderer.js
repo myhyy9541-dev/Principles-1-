@@ -16,7 +16,7 @@ let contacts = [], groups = [], currentChat = 'general', allMessages = (() => { 
 const messageById = new Map(allMessages.filter(message => message?.id).map(message => [message.id, message]));
 const messageSockets = new Map(), historyCursors = new Map(), requestedChatHistory = new WeakMap();
 let historyViewEnd = null, olderHistoryRequest = null, historyCacheTimer = null;
-let acceptingCall = false, startingCall = false, callTransport = null, callPeerId = null;
+let acceptingCall = false, startingCall = false, callTransport = null, callPeerId = null, callOwnerId = null;
 const peers = new Map();
 const deferredDescriptions = new Map();
 const deferredCandidates = new Map();
@@ -26,6 +26,31 @@ function toast(message) {
   element.textContent = message;
   element.classList.remove('hidden');
   setTimeout(() => element.classList.add('hidden'), 3500);
+}
+function showDialog(title, message, { value = '', multiline = false, yesNo = false, confirmText = 'موافق' } = {}) {
+  return new Promise(resolve => {
+    const dialog = document.createElement('dialog'); dialog.className = 'wasel-prompt-dialog';
+    const panel = document.createElement('div'); panel.className = 'wasel-prompt-panel';
+    const heading = document.createElement('h2'); heading.textContent = title;
+    const description = document.createElement('p'); description.textContent = message;
+    panel.append(heading, description);
+    let field = null;
+    if (!yesNo) {
+      field = document.createElement(multiline ? 'textarea' : 'input'); field.value = value; field.maxLength = 5000; field.placeholder = multiline ? 'اكتب رسالتك هنا…' : '';
+      field.className = 'wasel-prompt-field'; panel.append(field);
+    }
+    const actions = document.createElement('div'); actions.className = 'wasel-prompt-actions';
+    const cancel = document.createElement('button'); cancel.type = 'button'; cancel.className = 'call-control'; cancel.textContent = yesNo ? 'رفض' : 'إلغاء';
+    const accept = document.createElement('button'); accept.type = 'button'; accept.className = 'icon-btn primary'; accept.textContent = yesNo ? 'قبول' : confirmText;
+    actions.append(cancel, accept); panel.append(actions); dialog.append(panel); document.body.append(dialog);
+    let settled = false;
+    const finish = result => { if (settled) return; settled = true; if (dialog.open) dialog.close(); dialog.remove(); resolve(result); };
+    cancel.onclick = () => finish(yesNo ? false : null);
+    accept.onclick = () => finish(yesNo ? true : (field.value.trim() || null));
+    dialog.addEventListener('cancel', event => { event.preventDefault(); finish(yesNo ? false : null); }, { once: true });
+    dialog.addEventListener('keydown', event => { if (!multiline && !yesNo && event.key === 'Enter') { event.preventDefault(); accept.click(); } });
+    dialog.showModal(); field?.focus();
+  });
 }
 function formatTime(value) { return new Date(value || Date.now()).toLocaleTimeString('ar', { hour: '2-digit', minute: '2-digit' }); }
 function fileUrl(id, message = {}) {
@@ -457,7 +482,9 @@ setInterval(() => {
   const ttl = Math.max(15000, (appSettings.discoveryIntervalMs || 1800) * 3);
   let changed = false;
   for (const [id, peer] of discoveredPeers) if (Date.now() - (peer.lastSeen || 0) > ttl) {
-    const item = peerSockets.get(id); item?.socket.disconnect(); peerSockets.delete(id); discoveredPeers.delete(id); changed = true;
+    const item = peerSockets.get(id);
+    if (item?.socket.connected) { peer.lastSeen = Date.now(); continue; }
+    item?.socket.disconnect(); peerSockets.delete(id); discoveredPeers.delete(id); changed = true;
     if (callPeerId === item?.remoteSessionId) closeCall(false);
   }
   if (changed && connectionMode === 'direct') refreshPeerContacts();
@@ -511,6 +538,8 @@ $('messageInput').addEventListener('input', event => {
   event.target.style.height = 'auto'; event.target.style.height = `${Math.min(event.target.scrollHeight, 110)}px`;
 });
 const transfers = new Map();
+let activeUploads = 0, transferRenderTimer = null;
+function scheduleTransferRender() { if (transferRenderTimer) return; transferRenderTimer = setTimeout(() => { transferRenderTimer = null; renderTransfers(); }, 120); }
 $('attachBtn').onclick = () => $('fileInput').click();
 $('folderBtn').onclick = () => $('folderInput').click();
 $('fileInput').onchange = event => { queueFiles([...event.target.files]); event.target.value = ''; };
@@ -573,7 +602,8 @@ async function waitConnected(job) {
 }
 async function runUpload(job) {
   if (job.running) return;
-  job.running = true;
+  if (activeUploads >= 1) { job.state = 'في قائمة الانتظار'; renderTransfers(); return; }
+  job.running = true; activeUploads++;
   try {
     while (!job.canceled && job.offset < job.file.size) {
       if (job.paused) { await new Promise(resolve => { job.resume = resolve; }); continue; }
@@ -587,7 +617,7 @@ async function runUpload(job) {
         const end = Math.min(job.offset + UPLOAD_CHUNK_BYTES, job.file.size);
         const bytes = new Uint8Array(await job.file.slice(job.offset, end).arrayBuffer());
         const response = await socketAck('upload-chunk', { transferId: job.id, offset: job.offset, data: encodeBase64(bytes) }, transport);
-        job.offset = response.offset; renderTransfers();
+        job.offset = response.offset; scheduleTransferRender();
       }
     }
     if (!job.canceled && job.offset === job.file.size) {
@@ -596,23 +626,27 @@ async function runUpload(job) {
     }
   } catch (error) {
     if (!job.canceled) { job.state = 'تعذر النقل — اضغط استئناف'; job.paused = true; toast(error.message); }
-  } finally { job.running = false; renderTransfers(); }
+  } finally {
+    job.running = false; activeUploads = Math.max(0, activeUploads - 1); renderTransfers();
+    const next = [...transfers.values()].find(item => !item.running && !item.paused && !item.canceled && item.state === 'في قائمة الانتظار');
+    if (next) queueMicrotask(() => runUpload(next));
+  }
 }
 $('chatSelect').onchange = event => selectChat(event.target.value);
-$('newGroupBtn').onclick = () => {
+$('newGroupBtn').onclick = async () => {
   if (connectionMode === 'direct') return toast('المجموعات تُدار حالياً من وضع المضيف المؤقت؛ المحادثة العامة وP2P الفردي متاحان هنا.');
   if (!connected) return toast('اتصل بالغرفة لإنشاء مجموعة.');
   const eligible = contacts.filter(contact => contact.clientId !== clientId);
   if (!eligible.length) return toast('لا يوجد مستخدمون آخرون معروفون بعد.');
   const choices = eligible.map((item, index) => `${index + 1}. ${item.name}${item.online ? '' : ' (غير متصل)'}`).join('\n');
-  const name = prompt('اسم المجموعة:'); if (!name?.trim()) return;
-  const input = prompt(`أدخل أرقام الأعضاء مفصولة بفواصل:\n${choices}`, eligible.map((_, index) => index + 1).join(','));
+  const name = await showDialog('إنشاء مجموعة', 'اكتب اسم المجموعة:'); if (!name?.trim()) return;
+  const input = await showDialog('أعضاء المجموعة', `أدخل أرقام الأعضاء مفصولة بفواصل:\n${choices}`, { value: eligible.map((_, index) => index + 1).join(',') });
   if (!input) return;
   const members = input.split(',').map(value => eligible[Number(value.trim()) - 1]?.clientId).filter(Boolean);
   socket.emit('create-group', { name, members });
 };
-$('broadcastBtn').onclick = $('broadcastHere').onclick = () => {
-  const text = prompt('اكتب رسالة البث التي ستصل إلى جميع المستخدمين المعروفين، بمن فيهم غير المتصلين:');
+$('broadcastBtn').onclick = $('broadcastHere').onclick = async () => {
+  const text = await showDialog('رسالة بث للجميع', 'اكتب الرسالة التي ستصل إلى المستخدمين المتصلين في الشبكة:', { multiline: true, confirmText: 'بث الرسالة' });
   if (text?.trim()) socket?.emit('broadcast', { text: text.trim() });
 };
 $('searchBtn').onclick = () => { $('searchBar').classList.toggle('hidden'); $('searchInput').focus(); };
@@ -651,9 +685,10 @@ async function startCall(mode, initiator = true, incomingTransport = null) {
       directTarget = peerSockets.get(currentChat.slice(5));
       if (!directTarget?.socket.connected || !directTarget.remoteSessionId) return toast('الطرف لم يكتمل اتصاله بعد؛ انتظر ظهوره متصلاً ثم أعد المحاولة.');
     }
-    localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: mode === 'video' });
+    localStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: mode === 'video' ? { width: { ideal: 640, max: 1280 }, height: { ideal: 360, max: 720 }, frameRate: { ideal: 24, max: 30 } } : false });
     showCallPanel(mode);
     if (initiator) {
+      callOwnerId = window._socketId || null;
       if (connectionMode === 'direct') {
         callTransport = directTarget.socket; callPeerId = directTarget.remoteSessionId; signalSockets.set(directTarget.remoteSessionId, callTransport);
         callTransport.emit('signal', { to: directTarget.remoteSessionId, targetClientId: directTarget.info.clientId, description: { type: 'call-start', mode } });
@@ -661,12 +696,15 @@ async function startCall(mode, initiator = true, incomingTransport = null) {
       } else {
         callTransport = socket;
         socket?.emit('signal', { description: { type: 'call-start', mode } });
-        currentMembers.filter(member => member.id !== window._socketId).forEach(member => makePeer(member.id, true, socket));
       }
     } else {
       callTransport = incomingTransport || socket;
-      for (const [id, packet] of deferredDescriptions) await processDescription(id, packet);
-      deferredDescriptions.clear();
+      if (connectionMode === 'direct') {
+        for (const [id, packet] of deferredDescriptions) await processDescription(id, packet);
+        deferredDescriptions.clear();
+      } else {
+        callTransport?.emit('signal', { description: { type: 'call-accept' } });
+      }
     }
   } catch (error) {
     localStream?.getTracks().forEach(track => track.stop()); localStream = null;
@@ -717,6 +755,11 @@ function makePeer(id, offer, transport = null) {
   }).catch(error => toast(`تعذر بدء الاتصال: ${error.message}`));
   return pc;
 }
+function removeCallPeer(id) {
+  const pc = peers.get(id); if (pc) { pc.close(); peers.delete(id); }
+  deferredDescriptions.delete(id); deferredCandidates.delete(id); signalSockets.delete(id);
+  document.querySelectorAll(`[data-peer="${CSS.escape(String(id))}"]`).forEach(node => node.remove());
+}
 async function processDescription(id, packet) {
   const pc = makePeer(id, false);
   if (!pc) { deferredDescriptions.set(id, packet); return; }
@@ -731,15 +774,34 @@ async function processDescription(id, packet) {
 }
 async function receiveSignal(packet, source = socket) {
   if (packet.from) { signalSockets.set(packet.from, source); if (connectionMode === 'direct' && packet.description?.type === 'call-start') callPeerId = packet.from; }
-  if (packet.description?.type === 'call-end') { closeCall(false); toast('انتهى الاتصال المباشر.'); return; }
+  if (packet.description?.type === 'call-end-all') { closeCall(false); toast('انتهت المكالمة.'); return; }
+  if (packet.description?.type === 'call-end') {
+    const id = packet.from; removeCallPeer(id);
+    if (connectionMode === 'direct' && (!peers.size || callPeerId === id)) closeCall(false);
+    else if (connectionMode === 'host' && callOwnerId === id) closeCall(false);
+    return;
+  }
+  if (packet.description?.type === 'call-roster') {
+    if (!localStream || connectionMode !== 'host') return;
+    const participants = packet.description.participants || [];
+    for (const entry of participants) {
+      const id = typeof entry === 'string' ? entry : '';
+      if (!id || id === window._socketId || peers.has(id)) continue;
+      const initiate = String(window._socketId).localeCompare(id) < 0;
+      makePeer(id, initiate, source);
+    }
+    $('callStatus').textContent = `${peers.size + 1} مشاركون · اتصال مباشر داخل الشبكة`;
+    return;
+  }
   if (packet.description?.type === 'call-start') {
     if (localStream) return;
     if (acceptingCall) return;
     acceptingCall = true;
     try {
       const mode = packet.description.mode === 'video' ? 'video' : 'audio';
-      if (confirm(`بدأ ${mode === 'video' ? 'اتصال فيديو' : 'اتصال صوتي'} محلي. هل تريد الانضمام؟`)) await startCall(mode, false, source);
-      else source?.emit('signal', { to: packet.from, description: { type: 'call-end' } });
+      callOwnerId = packet.from;
+      if (await showDialog(mode === 'video' ? 'دعوة لمكالمة فيديو' : 'دعوة لمكالمة صوتية', 'هل تريد الانضمام إلى المكالمة المحلية؟', { yesNo: true })) await startCall(mode, false, source);
+      else { source?.emit('signal', { to: packet.from, description: { type: 'call-end' } }); callOwnerId = null; callPeerId = null; }
     } finally { acceptingCall = false; }
     return;
   }
@@ -756,9 +818,14 @@ async function receiveSignal(packet, source = socket) {
 }
  $('endCall').onclick = () => closeCall();
 function closeCall(notify = true) {
-  if (notify && callMode) (callTransport || socket)?.emit('signal', { ...(connectionMode === 'direct' && callPeerId ? { to: callPeerId } : {}), description: { type: 'call-end' } });
+  if (notify && callMode) {
+    if (connectionMode === 'host' && callOwnerId === window._socketId) (callTransport || socket)?.emit('signal', { description: { type: 'call-end-all' } });
+    else if (connectionMode === 'host') (callTransport || socket)?.emit('signal', { description: { type: 'call-end' } });
+    else if (peers.size) for (const [id] of peers) (signalSockets.get(id) || callTransport || socket)?.emit('signal', { to: id, description: { type: 'call-end' } });
+    else if (callPeerId) (callTransport || socket)?.emit('signal', { to: callPeerId, description: { type: 'call-end' } });
+  }
   for (const peer of peers.values()) peer.close();
-  peers.clear(); deferredDescriptions.clear(); deferredCandidates.clear(); signalSockets.clear(); callTransport = null; callPeerId = null;
+  peers.clear(); deferredDescriptions.clear(); deferredCandidates.clear(); signalSockets.clear(); callTransport = null; callPeerId = null; callOwnerId = null;
   localStream?.getTracks().forEach(track => track.stop()); localStream = null; callMode = null;
   $('callPanel').classList.add('hidden'); $('audioNodes').innerHTML = '';
 }

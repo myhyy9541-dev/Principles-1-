@@ -8,7 +8,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.Vector;
-import java.util.concurrent.atomic.AtomicReference;
 import javax.swing.JFileChooser;
 import javax.swing.JFrame;
 import javax.swing.JOptionPane;
@@ -87,9 +86,8 @@ public final class WaselApplication {
             @Override public boolean onFileDialog(CefBrowser source, FileDialogMode mode, String title, String defaultFilePath,
                                                   Vector<String> acceptFilters, Vector<String> acceptExtensions,
                                                   Vector<String> acceptMimeTypes, CefFileDialogCallback callback) {
-                AtomicReference<Vector<String>> chosen = new AtomicReference<>(new Vector<>());
-                try {
-                    SwingUtilities.invokeAndWait(() -> {
+                SwingUtilities.invokeLater(() -> {
+                    try {
                         JFileChooser chooser = new JFileChooser(); chooser.setDialogTitle(title == null || title.isBlank() ? "اختيار ملف" : title);
                         chooser.setMultiSelectionEnabled(mode == FileDialogMode.FILE_DIALOG_OPEN_MULTIPLE);
                         if (mode == FileDialogMode.FILE_DIALOG_OPEN_FOLDER) chooser.setFileSelectionMode(JFileChooser.DIRECTORIES_ONLY);
@@ -105,11 +103,11 @@ public final class WaselApplication {
                             Vector<String> paths = new Vector<>();
                             if (mode == FileDialogMode.FILE_DIALOG_OPEN_MULTIPLE) for (java.io.File file : chooser.getSelectedFiles()) paths.add(file.getAbsolutePath());
                             else if (chooser.getSelectedFile() != null) paths.add(chooser.getSelectedFile().getAbsolutePath());
-                            chosen.set(paths);
-                        }
-                    });
-                    callback.Continue(chosen.get()); return true;
-                } catch (Exception ex) { callback.Continue(new Vector<>()); return true; }
+                            callback.Continue(paths);
+                        } else callback.Continue(new Vector<>());
+                    } catch (Exception ex) { callback.Continue(new Vector<>()); }
+                });
+                return true;
             }
         });
     }
@@ -117,16 +115,14 @@ public final class WaselApplication {
     private void installDownloadHandler() {
         cefClient.addDownloadHandler(new CefDownloadHandler() {
             @Override public boolean onBeforeDownload(CefBrowser source, CefDownloadItem item, String suggestedName, CefBeforeDownloadCallback callback) {
-                AtomicReference<String> path = new AtomicReference<>("");
-                try {
-                    SwingUtilities.invokeAndWait(() -> {
+                SwingUtilities.invokeLater(() -> {
+                    try {
                         JFileChooser chooser = new JFileChooser(); chooser.setDialogTitle("حفظ الملف المشترك"); chooser.setDialogType(JFileChooser.SAVE_DIALOG);
                         chooser.setSelectedFile(new java.io.File(suggestedName == null || suggestedName.isBlank() ? "shared-file" : suggestedName));
-                        if (chooser.showSaveDialog(frame) == JFileChooser.APPROVE_OPTION) path.set(chooser.getSelectedFile().getAbsolutePath());
-                    });
-                } catch (Exception ignored) { }
-                if (path.get().isBlank()) callback.Continue("", false);
-                else callback.Continue(path.get(), false);
+                        if (chooser.showSaveDialog(frame) == JFileChooser.APPROVE_OPTION) callback.Continue(chooser.getSelectedFile().getAbsolutePath(), false);
+                        else callback.Continue("", false);
+                    } catch (Exception ignored) { callback.Continue("", false); }
+                });
                 return true;
             }
             @Override public void onDownloadUpdated(CefBrowser source, CefDownloadItem item, CefDownloadItemCallback callback) { }
@@ -136,15 +132,14 @@ public final class WaselApplication {
     private void installJsDialogHandler() {
         cefClient.addJSDialogHandler(new CefJSDialogHandler() {
             @Override public boolean onJSDialog(CefBrowser source, String origin, JSDialogType type, String message, String defaultPrompt, CefJSDialogCallback callback, BoolRef suppressMessage) {
-                AtomicReference<String> response = new AtomicReference<>(); AtomicReference<Boolean> accepted = new AtomicReference<>(false);
-                try {
-                    SwingUtilities.invokeAndWait(() -> {
-                        if (type == JSDialogType.JSDIALOGTYPE_ALERT) { JOptionPane.showMessageDialog(frame, message, "واصل", JOptionPane.INFORMATION_MESSAGE); accepted.set(true); }
-                        else if (type == JSDialogType.JSDIALOGTYPE_CONFIRM) accepted.set(JOptionPane.showConfirmDialog(frame, message, "واصل", JOptionPane.YES_NO_OPTION) == JOptionPane.YES_OPTION);
-                        else { Object result = JOptionPane.showInputDialog(frame, message, "واصل", JOptionPane.QUESTION_MESSAGE, null, null, defaultPrompt == null ? "" : defaultPrompt); if (result != null) { response.set(result.toString()); accepted.set(true); } }
-                    });
-                } catch (Exception ignored) { }
-                callback.Continue(accepted.get(), response.get()); return true;
+                SwingUtilities.invokeLater(() -> {
+                    try {
+                        if (type == JSDialogType.JSDIALOGTYPE_ALERT) { JOptionPane.showMessageDialog(frame, message, "واصل", JOptionPane.INFORMATION_MESSAGE); callback.Continue(true, ""); }
+                        else if (type == JSDialogType.JSDIALOGTYPE_CONFIRM) callback.Continue(JOptionPane.showConfirmDialog(frame, message, "واصل", JOptionPane.YES_NO_OPTION) == JOptionPane.YES_OPTION, "");
+                        else { Object result = JOptionPane.showInputDialog(frame, message, "واصل", JOptionPane.QUESTION_MESSAGE, null, null, defaultPrompt == null ? "" : defaultPrompt); callback.Continue(result != null, result == null ? "" : result.toString()); }
+                    } catch (Exception ignored) { callback.Continue(false, ""); }
+                });
+                return true;
             }
             @Override public boolean onBeforeUnloadDialog(CefBrowser source, String message, boolean reload, CefJSDialogCallback callback) { callback.Continue(true, ""); return true; }
             @Override public void onResetDialogState(CefBrowser source) { }
