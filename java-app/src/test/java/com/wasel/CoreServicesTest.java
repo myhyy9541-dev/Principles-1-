@@ -39,11 +39,26 @@ class CoreServicesTest {
 
     @Test void settingsAreNormalizedAndPersisted() throws Exception {
         var file = temp.resolve("settings.json");
-        var settings = new SettingsStore.Settings(); settings.discoveryIntervalMs = 250; settings.theme = "malicious"; settings.networkInterface = "missing"; settings.autoConnect = false;
+        var settings = new SettingsStore.Settings(); settings.discoveryIntervalMs = 250; settings.theme = "malicious"; settings.networkInterface = "missing"; settings.autoConnect = false; settings.soundNotifications = false;
         var saved = SettingsStore.save(file, settings, List.of());
         assertEquals(SettingsStore.DEFAULT_DISCOVERY_INTERVAL, saved.discoveryIntervalMs);
-        assertEquals("light", saved.theme); assertEquals("auto", saved.networkInterface); assertFalse(saved.autoConnect);
+        assertEquals("light", saved.theme); assertEquals("auto", saved.networkInterface); assertFalse(saved.autoConnect); assertFalse(saved.soundNotifications);
         var loaded = SettingsStore.load(file, List.of()); assertEquals(saved.discoveryIntervalMs, loaded.discoveryIntervalMs);
+    }
+
+    @Test void defaultSaveDirectoryIsAbsoluteAndLegacySettingsRemainLoadable() throws Exception {
+        var defaults = new SettingsStore.Settings();
+        assertEquals(Path.of(System.getProperty("user.home"), "Downloads").toAbsolutePath().normalize().toString(), defaults.defaultSaveDirectory);
+        Path file = temp.resolve("settings.json");
+        java.nio.file.Files.writeString(file, "{\"networkInterface\":\"auto\",\"theme\":\"dark\"}");
+        var legacy = SettingsStore.load(file, List.of());
+        assertEquals(defaults.defaultSaveDirectory, legacy.defaultSaveDirectory);
+
+        var updated = new SettingsStore.Settings(); updated.defaultSaveDirectory = "relative-folder/../downloads";
+        var saved = SettingsStore.save(file, updated, List.of());
+        assertEquals(Path.of("relative-folder/../downloads").toAbsolutePath().normalize().toString(), saved.defaultSaveDirectory);
+        updated.defaultSaveDirectory = "  ";
+        assertEquals("", SettingsStore.normalize(updated, List.of()).defaultSaveDirectory);
     }
 
     @Test void privateHistoryAndReadReceiptsAreScopedToRecipients() throws Exception {
@@ -142,6 +157,25 @@ class CoreServicesTest {
             assertEquals("bytes 2-5/10", partial.headers().firstValue("Content-Range").orElse(""));
             var full = client.send(java.net.http.HttpRequest.newBuilder(java.net.URI.create(url)).GET().build(), java.net.http.HttpResponse.BodyHandlers.ofByteArray());
             assertEquals(200, full.statusCode()); assertArrayEquals(content, full.body());
+            var textPreview = client.send(java.net.http.HttpRequest.newBuilder(java.net.URI.create(url + "?preview=1")).GET().build(), java.net.http.HttpResponse.BodyHandlers.ofByteArray());
+            assertEquals(200, textPreview.statusCode()); assertEquals("text/plain", textPreview.headers().firstValue("Content-Type").orElse(""));
+            assertTrue(textPreview.headers().firstValue("Content-Disposition").orElse("").startsWith("inline;"));
+
+            String audioId = UUID.randomUUID().toString(); Path audioPath = root.resolve("files").resolve(audioId); byte[] audioBytes = "abcdefghij".getBytes(StandardCharsets.UTF_8);
+            java.nio.file.Files.write(audioPath, audioBytes); JsonObject audio = new JsonObject(); audio.addProperty("id", audioId); audio.addProperty("type", "file");
+            audio.addProperty("name", "voice.webm"); audio.addProperty("mime", "audio/webm;codecs=opus"); audio.addProperty("size", audioBytes.length); audio.addProperty("diskName", audioId);
+            audio.addProperty("channel", "general"); audio.addProperty("time", System.currentTimeMillis()); store.addMessage(audio);
+            var audioRange = client.send(java.net.http.HttpRequest.newBuilder(java.net.URI.create(url.substring(0, url.lastIndexOf('/') + 1) + audioId + "?preview=1"))
+                    .header("Range", "bytes=2-4").GET().build(), java.net.http.HttpResponse.BodyHandlers.ofByteArray());
+            assertEquals(206, audioRange.statusCode()); assertArrayEquals("cde".getBytes(StandardCharsets.UTF_8), audioRange.body());
+
+            String htmlId = UUID.randomUUID().toString(); Path htmlPath = root.resolve("files").resolve(htmlId); java.nio.file.Files.writeString(htmlPath, "<script>alert(1)</script>");
+            JsonObject html = new JsonObject(); html.addProperty("id", htmlId); html.addProperty("type", "file"); html.addProperty("name", "active.html");
+            html.addProperty("mime", "text/html"); html.addProperty("size", 27); html.addProperty("diskName", htmlId); html.addProperty("channel", "general");
+            html.addProperty("time", System.currentTimeMillis()); store.addMessage(html);
+            var blockedPreview = client.send(java.net.http.HttpRequest.newBuilder(java.net.URI.create(url.substring(0, url.lastIndexOf('/') + 1) + htmlId + "?preview=1"))
+                    .GET().build(), java.net.http.HttpResponse.BodyHandlers.ofByteArray());
+            assertEquals(415, blockedPreview.statusCode());
 
             String largeImageId = UUID.randomUUID().toString(); Path largeImage = root.resolve("files").resolve(largeImageId);
             java.nio.file.Files.write(largeImage, new byte[8 * 1024 * 1024 + 1]); JsonObject image = new JsonObject();

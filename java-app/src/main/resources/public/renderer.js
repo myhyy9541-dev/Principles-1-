@@ -10,7 +10,7 @@ let pendingFile = null, localStream = null, callMode = null, currentMembers = []
 let connectionMode = localStorage.getItem('wasel-connection-mode') || 'direct', p2pActive = false, localPeerSocket = null, selfFileAddress = '127.0.0.1';
 const peerSockets = new Map(), discoveredPeers = new Map(), signalSockets = new Map();
 if (!['direct', 'host'].includes(connectionMode)) connectionMode = 'direct';
-let appSettings = { networkInterface: 'auto', discoveryIntervalMs: 1800, autoConnect: true, openAtLogin: false, theme: 'light' };
+let appSettings = { networkInterface: 'auto', discoveryIntervalMs: 1800, autoConnect: true, openAtLogin: false, theme: 'light', defaultSaveDirectory: '', soundNotifications: true };
 let discoveredRoom = null, networkSettingsView = null;
 let contacts = [], groups = [], currentChat = 'general', allMessages = (() => { try { const saved = JSON.parse(localStorage.getItem('wasel-p2p-history') || '[]'); return Array.isArray(saved) ? saved.slice(-500) : []; } catch (_) { return []; } })(), searchTerm = '';
 const messageById = new Map(allMessages.filter(message => message?.id).map(message => [message.id, message]));
@@ -18,6 +18,7 @@ const messageSockets = new Map(), historyCursors = new Map(), requestedChatHisto
 let historyViewEnd = null, olderHistoryRequest = null, historyCacheTimer = null;
 let acceptingCall = false, startingCall = false, callTransport = null, callPeerId = null, callOwnerId = null;
 const peers = new Map();
+const remoteMediaElements = new Map();
 const deferredDescriptions = new Map();
 const deferredCandidates = new Map();
 
@@ -26,6 +27,27 @@ function toast(message) {
   element.textContent = message;
   element.classList.remove('hidden');
   setTimeout(() => element.classList.add('hidden'), 3500);
+}
+let notificationAudioContext = null;
+function prepareNotificationAudio() {
+  try {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) return;
+    notificationAudioContext ||= new AudioContextClass();
+    if (notificationAudioContext.state === 'suspended') notificationAudioContext.resume().catch(() => {});
+  } catch (_) { }
+}
+document.addEventListener('pointerdown', prepareNotificationAudio);
+function playNotification(kind) {
+  if (appSettings.soundNotifications === false || !notificationAudioContext || notificationAudioContext.state !== 'running') return;
+  const context = notificationAudioContext, now = context.currentTime;
+  const tones = kind === 'call' ? [660, 880] : kind === 'join' ? [660] : kind === 'leave' ? [420] : [760];
+  tones.forEach((frequency, index) => {
+    const oscillator = context.createOscillator(), gain = context.createGain(), start = now + index * 0.11;
+    oscillator.type = 'sine'; oscillator.frequency.value = frequency; gain.gain.setValueAtTime(0.0001, start);
+    gain.gain.exponentialRampToValueAtTime(0.035, start + 0.02); gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.16);
+    oscillator.connect(gain); gain.connect(context.destination); oscillator.start(start); oscillator.stop(start + 0.17);
+  });
 }
 function showDialog(title, message, { value = '', multiline = false, yesNo = false, confirmText = 'موافق' } = {}) {
   return new Promise(resolve => {
@@ -75,15 +97,41 @@ function addMessage(message, target = $('messages')) {
   let content = escapeHtml(message.text || '');
   if (message.type === 'file') {
     const url = fileUrl(message.id, message);
-    const preview = Number(message.size || 0) <= IMAGE_PREVIEW_MAX_BYTES && /^image\/(png|jpeg|gif|webp|avif)$/.test(String(message.mime || ''))
+    const mime = String(message.mime || '').toLowerCase();
+    const preview = Number(message.size || 0) <= IMAGE_PREVIEW_MAX_BYTES && /^image\/(png|jpeg|gif|webp|avif)$/.test(mime)
       ? `<img class="image-preview" src="${url}?preview=1" alt="${escapeHtml(message.name)}" loading="lazy">` : '';
-    content = `<a class="file-card" download="${escapeHtml(message.name)}" href="${url}"><span class="file-icon">▤</span><span class="file-label">${escapeHtml(message.name)}<small>ملف مشترك · ${escapeHtml(message.user)} · ${formatSize(message.size)}</small></span><span>تنزيل</span></a>${preview}`;
+    const player = mime.startsWith('audio/') ? `<audio class="inline-audio" controls preload="none" src="${url}?preview=1"></audio>`
+      : mime.startsWith('video/') ? `<video class="inline-video" controls preload="metadata" src="${url}?preview=1"></video>` : '';
+    content = `<div class="file-card"><a class="file-download" download="${escapeHtml(message.name)}" href="${url}"><span class="file-icon">▤</span><span class="file-label">${escapeHtml(message.name)}<small>ملف مشترك · ${escapeHtml(message.user)} · ${formatSize(message.size)}</small></span><span>تنزيل</span></a><button type="button" class="preview-button" data-preview-id="${escapeHtml(message.id)}">معاينة</button></div>${preview}${player}`;
   }
   const status = mine && message.channel !== 'general' ? `<span class="delivery-state">${(message.readBy || []).length ? '✓✓ تمت القراءة' : (message.deliveredTo || []).length ? '✓ تم التسليم' : '◷ قيد التسليم'}</span>` : '';
   row.innerHTML = `<div class="msg-avatar">${initial}</div><div class="bubble-wrap"><div class="msg-meta"><b>${escapeHtml(message.user || 'النظام')}</b><span class="msg-time">${formatTime(message.time)}</span>${status}</div><div class="bubble">${content}</div></div>`;
   row.dataset.messageId = message.id || '';
   target.append(row);
 }
+function showFilePreview(message) {
+  const dialog = $('fileViewer'), body = $('fileViewerBody'), mime = String(message.mime || '').toLowerCase();
+  const url = `${fileUrl(message.id, message)}?preview=1`;
+  $('fileViewerTitle').textContent = message.name || 'معاينة الملف'; body.replaceChildren();
+  if (/^image\/(png|jpeg|gif|webp|avif)$/.test(mime)) {
+    if (Number(message.size || 0) > IMAGE_PREVIEW_MAX_BYTES) body.textContent = 'الصورة أكبر من الحد المسموح للمعاينة؛ نزّلها لعرضها.';
+    else { const image = document.createElement('img'); image.className = 'viewer-image'; image.src = url; image.alt = message.name || ''; image.onerror = () => { body.textContent = 'تعذرت معاينة الصورة؛ نزّل الملف للتحقق منه.'; }; body.append(image); }
+  } else if (/^(audio|video)\//.test(mime)) {
+    const media = document.createElement(mime.startsWith('audio/') ? 'audio' : 'video'); media.controls = true; media.autoplay = false; media.src = url; media.className = 'viewer-media'; body.append(media);
+  } else if (mime === 'application/pdf' || mime === 'text/plain') {
+    const frame = document.createElement('iframe'); frame.className = 'viewer-frame'; frame.title = `معاينة ${message.name || 'الملف'}`; frame.src = url; body.append(frame);
+  } else {
+    body.textContent = 'لا تتوفر معاينة داخلية لهذا النوع؛ يمكنك تنزيل الملف وفتحه بالتطبيق المناسب على Windows.';
+  }
+  dialog.showModal();
+}
+$('messages').addEventListener('click', event => {
+  const button = event.target.closest('[data-preview-id]');
+  if (!button) return;
+  const message = messageById.get(button.dataset.previewId);
+  if (message?.type === 'file') showFilePreview(message);
+});
+$('closeFileViewer').onclick = () => $('fileViewer').close();
 function messageBelongs(message) {
   if (message.type === 'system') return false;
   if (currentChat === 'general') return message.channel === 'general' || message.channel === 'broadcast';
@@ -251,13 +299,11 @@ function formatSize(bytes = 0) {
 }
 function renderMembers(members) {
   if (connectionMode === 'direct') { renderPeerMembers(); return; }
-  const previousIds = new Set(currentMembers.map(member => member.id));
   const nextIds = new Set(members.map(member => member.id));
-  for (const [id, pc] of peers) if (!nextIds.has(id)) { pc.close(); peers.delete(id); }
+  for (const id of peers.keys()) if (!nextIds.has(id)) removeCallPeer(id);
   currentMembers = members;
   $('memberCount').textContent = members.length;
   $('members').innerHTML = members.map(user => `<button class="member member-button" data-chat="user:${escapeHtml(user.clientId)}"><span class="avatar">${escapeHtml(user.name.slice(0, 1))}</span>${escapeHtml(user.name)}<span class="green-dot"></span></button>`).join('');
-  if (localStream && callMode) members.filter(user => user.id !== window._socketId && !previousIds.has(user.id)).forEach(user => makePeer(user.id, true));
 }
 function refreshPeerContacts() {
   for (const peer of discoveredPeers.values()) {
@@ -295,6 +341,7 @@ function selectChat(chat) {
   else $('chatTitle').textContent = `مجموعة · ${groups.find(item => item.id === chat.slice(6))?.name || 'مجموعة'}`;
   renderChatOptions(); renderMessages(); requestChatHistory(chat);
 }
+const recentSystemSounds = new Map();
 function handleEvent(event, data, source = socket) {
   switch (event) {
     case 'connect':
@@ -331,10 +378,19 @@ function handleEvent(event, data, source = socket) {
       break;
     }
     case 'members': if (connectionMode !== 'direct' || source === localPeerSocket) renderMembers(data); break;
-    case 'system-message': addMessage({ type: 'system', text: data.text }); break;
+    case 'system-message': {
+      addMessage({ type: 'system', text: data.text });
+      if (/انضم|غادر/.test(data?.text || '')) {
+        const key = data.text, now = Date.now(), previous = recentSystemSounds.get(key) || 0;
+        if (now - previous > 1500) playNotification(/انضم/.test(data.text) ? 'join' : 'leave');
+        recentSystemSounds.set(key, now);
+      }
+      break;
+    }
     case 'chat-message': {
       if (data?.id) messageSockets.set(data.id, source);
       mergeMessages([data]);
+      if (data?.senderClientId !== clientId) playNotification('message');
       if (messageBelongsFor(data, currentChat) && historyViewEnd == null) renderMessages();
       break;
     }
@@ -342,6 +398,7 @@ function handleEvent(event, data, source = socket) {
       if (data?.id) messageSockets.set(data.id, source);
       const fromPeer = [...peerSockets.values()].find(item => item.socket === source)?.info;
       const file = { type: 'file', ...data };
+      if (data?.senderClientId !== clientId) playNotification('message');
       if (connectionMode === 'direct') { file.fileHost = fromPeer?.address || (source === localPeerSocket ? '127.0.0.1' : '127.0.0.1'); file.filePort = fromPeer?.filePort || currentHost?.filePort || 43822; }
       mergeMessages([file]);
       if (messageBelongsFor(file, currentChat) && historyViewEnd == null) renderMessages();
@@ -544,17 +601,68 @@ $('attachBtn').onclick = () => $('fileInput').click();
 $('folderBtn').onclick = () => $('folderInput').click();
 $('fileInput').onchange = event => { queueFiles([...event.target.files]); event.target.value = ''; };
 $('folderInput').onchange = event => { queueFiles([...event.target.files], true); event.target.value = ''; };
-function queueFiles(files, folder = false) {
+function queueFiles(files, folder = false, targetOverride = null) {
   if (!files.length) return;
-  if (connectionMode === 'direct' && !currentChat.startsWith('user:')) return toast('في وضع P2P اختر محادثة شخص محدد قبل إرسال ملف أو صورة.');
+  const target = targetOverride || selectedTarget();
+  if (connectionMode === 'direct' && !target.toId) return toast('في وضع P2P اختر محادثة شخص محدد قبل إرسال ملف أو صورة.');
   for (const file of files) {
     if (!file.size) { toast(`تم تجاهل الملف الفارغ: ${file.name}`); continue; }
     if (file.size > MAX_FILE_BYTES) { toast(`تم تجاهل الملف؛ الحد الأقصى 1 غيغابايت: ${file.name}`); continue; }
     const name = folder && file.webkitRelativePath ? file.webkitRelativePath : file.name;
-    const job = { id: crypto.randomUUID(), file, name, target: selectedTarget(), offset: 0, paused: false, canceled: false, state: 'بالانتظار' };
+    const job = { id: crypto.randomUUID(), file, name, target, offset: 0, paused: false, canceled: false, state: 'بالانتظار' };
     transfers.set(job.id, job); renderTransfers(); runUpload(job);
   }
 }
+let recordingRequested = false, voiceRecorder = null, voiceRecorderStream = null, voiceRecorderChunks = [], voiceRecorderTarget = null;
+async function beginVoiceRecording() {
+  if (voiceRecorder || !recordingRequested) return;
+  if (connectionMode === 'direct' && !currentChat.startsWith('user:')) { recordingRequested = false; return toast('اختر محادثة خاصة قبل تسجيل رسالة صوتية في وضع P2P.'); }
+  if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) { recordingRequested = false; return toast('تسجيل الصوت غير مدعوم في إصدار Chromium الحالي.'); }
+  voiceRecorderTarget = selectedTarget();
+  try {
+    voiceRecorderStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+    if (!recordingRequested) { voiceRecorderStream.getTracks().forEach(track => track.stop()); voiceRecorderStream = null; return; }
+    const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus'];
+    const mimeType = candidates.find(type => MediaRecorder.isTypeSupported(type)) || '';
+    voiceRecorder = new MediaRecorder(voiceRecorderStream, mimeType ? { mimeType } : undefined);
+    voiceRecorderChunks = [];
+    voiceRecorder.ondataavailable = event => { if (event.data?.size) voiceRecorderChunks.push(event.data); };
+    voiceRecorder.onerror = event => toast(`تعذر تسجيل الصوت: ${event.error?.message || 'خطأ في المسجل'}`);
+    voiceRecorder.onstop = () => {
+      const type = voiceRecorder?.mimeType || 'audio/webm';
+      const extension = type.includes('ogg') ? 'ogg' : type.includes('mp4') ? 'm4a' : 'webm';
+      const blob = new Blob(voiceRecorderChunks, { type });
+      const file = new File([blob], `voice-note-${Date.now()}.${extension}`, { type });
+      voiceRecorderStream?.getTracks().forEach(track => track.stop()); voiceRecorderStream = null; voiceRecorder = null;
+      $('voiceRecordBtn').classList.remove('recording'); $('recordingHint').classList.add('hidden');
+      if (file.size) queueFiles([file], false, voiceRecorderTarget); else toast('لم يلتقط التسجيل أي صوت.');
+      voiceRecorderTarget = null; voiceRecorderChunks = [];
+    };
+    voiceRecorder.start(500); $('voiceRecordBtn').classList.add('recording'); $('recordingHint').classList.remove('hidden');
+    if (!recordingRequested) stopVoiceRecording();
+  } catch (error) {
+    voiceRecorderStream?.getTracks().forEach(track => track.stop()); voiceRecorderStream = null; voiceRecorder = null; recordingRequested = false;
+    toast(`تعذر استخدام الميكروفون: ${error.message}`);
+  }
+}
+function stopVoiceRecording() {
+  recordingRequested = false;
+  if (voiceRecorder?.state === 'recording') voiceRecorder.stop();
+  else if (!voiceRecorder) { voiceRecorderStream?.getTracks().forEach(track => track.stop()); voiceRecorderStream = null; }
+}
+$('voiceRecordBtn').addEventListener('pointerdown', event => { event.preventDefault(); recordingRequested = true; beginVoiceRecording(); });
+window.addEventListener('pointerup', stopVoiceRecording);
+window.addEventListener('pointercancel', stopVoiceRecording);
+$('voiceRecordBtn').addEventListener('keydown', event => { if ((event.key === ' ' || event.key === 'Enter') && !event.repeat) { event.preventDefault(); recordingRequested = true; beginVoiceRecording(); } });
+$('voiceRecordBtn').addEventListener('keyup', event => { if (event.key === ' ' || event.key === 'Enter') stopVoiceRecording(); });
+let dragDepth = 0;
+document.addEventListener('dragenter', event => { if (![...(event.dataTransfer?.types || [])].includes('Files')) return; event.preventDefault(); dragDepth++; $('dropOverlay').classList.remove('hidden'); });
+document.addEventListener('dragover', event => { if ([...(event.dataTransfer?.types || [])].includes('Files')) event.preventDefault(); });
+document.addEventListener('dragleave', event => { if (![...(event.dataTransfer?.types || [])].includes('Files')) return; dragDepth = Math.max(0, dragDepth - 1); if (!dragDepth) $('dropOverlay').classList.add('hidden'); });
+document.addEventListener('drop', event => {
+  if (![...(event.dataTransfer?.types || [])].includes('Files')) return;
+  event.preventDefault(); dragDepth = 0; $('dropOverlay').classList.add('hidden'); queueFiles([...event.dataTransfer.files]);
+});
 function renderTransfers() {
   $('transferList').innerHTML = [...transfers.values()].map(job => {
     const percent = job.file.size ? Math.min(100, Math.floor(job.offset * 100 / job.file.size)) : 0;
@@ -611,7 +719,7 @@ async function runUpload(job) {
       if (job.canceled) break;
       job.state = 'جارٍ الرفع';
       const transport = uploadSocket(job);
-      const init = await socketAck('upload-init', { transferId: job.id, name: job.name, mime: job.file.type, size: job.file.size, ...job.target }, transport);
+      const init = await socketAck('upload-init', { transferId: job.id, name: job.name, mime: (job.file.type || 'application/octet-stream').split(';', 2)[0], size: job.file.size, ...job.target }, transport);
       job.offset = init.offset;
       while (!job.canceled && !job.paused && job.offset < job.file.size) {
         const end = Math.min(job.offset + UPLOAD_CHUNK_BYTES, job.file.size);
@@ -658,15 +766,19 @@ $('exportBtn').onclick = () => {
   const link = document.createElement('a'); link.href = URL.createObjectURL(new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' })); link.download = `wasel-history-${Date.now()}.csv`; link.click(); URL.revokeObjectURL(link.href);
 };
 function addVideo(label, stream, local = false, peerId = '') {
+  if (!local && peerId && remoteMediaElements.has(peerId)) {
+    const existing = remoteMediaElements.get(peerId); existing.srcObject = stream; existing.title = label; return existing;
+  }
   const video = document.createElement('video');
   video.autoplay = true; video.playsInline = true; video.muted = local; video.srcObject = stream; video.title = label;
   if (local) video.className = 'local-video';
-  if (peerId) video.dataset.peer = peerId;
+  if (peerId) { video.dataset.peer = peerId; remoteMediaElements.set(peerId, video); }
   $('videoGrid').append(video);
   return video;
 }
 function showCallPanel(mode) {
   callMode = mode;
+  remoteMediaElements.clear();
   $('callTitle').textContent = mode === 'video' ? 'مكالمة فيديو' : 'مكالمة صوتية';
   $('callStatus').textContent = 'اتصال محلي مباشر';
   $('callPanel').classList.remove('hidden'); $('videoGrid').innerHTML = '';
@@ -674,15 +786,51 @@ function showCallPanel(mode) {
   $('muteBtn').textContent = 'كتم الصوت'; $('cameraBtn').textContent = 'إيقاف الكاميرا';
   if (mode === 'video') addVideo('أنت', localStream, true);
 }
-async function startCall(mode, initiator = true, incomingTransport = null) {
+function onlineCallTargets() {
+  if (connectionMode === 'direct') return [...discoveredPeers.values()]
+    .filter(peer => peer.clientId !== clientId && peerSockets.get(peer.clientId)?.socket.connected && peer.remoteSessionId)
+    .map(peer => ({ clientId: peer.clientId, name: peer.name || 'مستخدم', id: peer.remoteSessionId }));
+  return currentMembers.filter(user => user.clientId !== clientId).map(user => ({ clientId: user.clientId, name: user.name || 'مستخدم', id: user.id }));
+}
+function chooseCallRecipients(mode) {
+  const targets = onlineCallTargets();
+  if (!targets.length) { toast('لا يوجد مستخدمون متصلون يمكن دعوتهم الآن.'); return Promise.resolve(null); }
+  return new Promise(resolve => {
+    const dialog = document.createElement('dialog'); dialog.className = 'recipient-dialog';
+    const form = document.createElement('form'); form.method = 'dialog';
+    const heading = document.createElement('h2'); heading.textContent = mode === 'video' ? 'دعوة إلى مكالمة فيديو' : 'دعوة إلى مكالمة صوتية';
+    const hint = document.createElement('p'); hint.textContent = connectionMode === 'host' ? 'اختر شخصاً واحداً أو أكثر لإرسال الدعوة.' : 'اختر مشاركاً واحداً للمكالمة المباشرة P2P.';
+    const list = document.createElement('div'); list.className = 'recipient-list';
+    for (const target of targets) {
+      const label = document.createElement('label'); label.className = 'recipient-item';
+      const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.value = target.clientId; checkbox.dataset.name = target.name;
+      if (connectionMode === 'direct') checkbox.addEventListener('change', () => { if (checkbox.checked) list.querySelectorAll('input').forEach(other => { if (other !== checkbox) other.checked = false; }); });
+      const name = document.createElement('span'); name.textContent = target.name;
+      label.append(checkbox, name); list.append(label);
+    }
+    const actions = document.createElement('div'); actions.className = 'recipient-actions';
+    const cancel = document.createElement('button'); cancel.type = 'button'; cancel.className = 'call-control'; cancel.textContent = 'إلغاء';
+    const invite = document.createElement('button'); invite.type = 'button'; invite.className = 'icon-btn primary'; invite.textContent = 'إرسال الدعوة';
+    actions.append(cancel, invite); form.append(heading, hint, list, actions); dialog.append(form); document.body.append(dialog);
+    const finish = value => { if (dialog.open) dialog.close(); dialog.remove(); resolve(value); };
+    cancel.onclick = () => finish(null);
+    invite.onclick = () => {
+      const selected = [...list.querySelectorAll('input:checked')].map(input => targets.find(target => target.clientId === input.value)).filter(Boolean);
+      if (!selected.length) return toast('اختر مستخدماً واحداً على الأقل.');
+      finish(selected);
+    };
+    dialog.addEventListener('cancel', event => { event.preventDefault(); finish(null); }, { once: true });
+    dialog.showModal();
+  });
+}
+async function startCall(mode, initiator = true, incomingTransport = null, selectedTargets = []) {
   if (callMode || startingCall) return toast('هناك مكالمة قائمة بالفعل. أنهها قبل بدء مكالمة أخرى.');
   if (!connected) return toast('اتصل بغرفة محلية أولاً');
   startingCall = true;
   try {
-    if (connectionMode === 'direct' && initiator && !currentChat.startsWith('user:')) return toast('اختر مستخدماً من القائمة لبدء مكالمة مباشرة.');
     let directTarget = null;
     if (connectionMode === 'direct' && initiator) {
-      directTarget = peerSockets.get(currentChat.slice(5));
+      directTarget = peerSockets.get(selectedTargets[0]?.clientId || (currentChat.startsWith('user:') ? currentChat.slice(5) : ''));
       if (!directTarget?.socket.connected || !directTarget.remoteSessionId) return toast('الطرف لم يكتمل اتصاله بعد؛ انتظر ظهوره متصلاً ثم أعد المحاولة.');
     }
     localStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: mode === 'video' ? { width: { ideal: 640, max: 1280 }, height: { ideal: 360, max: 720 }, frameRate: { ideal: 24, max: 30 } } : false });
@@ -695,7 +843,7 @@ async function startCall(mode, initiator = true, incomingTransport = null) {
         makePeer(directTarget.remoteSessionId, true, callTransport);
       } else {
         callTransport = socket;
-        socket?.emit('signal', { description: { type: 'call-start', mode } });
+        socket?.emit('signal', { description: { type: 'call-start', mode }, targetClientIds: selectedTargets.map(target => target.clientId) });
       }
     } else {
       callTransport = incomingTransport || socket;
@@ -711,8 +859,8 @@ async function startCall(mode, initiator = true, incomingTransport = null) {
     toast(`تعذر الوصول إلى الميكروفون/الكاميرا: ${error.message}`);
   } finally { startingCall = false; }
 }
-$('voiceBtn').onclick = () => startCall('audio');
-$('videoBtn').onclick = () => startCall('video');
+$('voiceBtn').onclick = async () => { const targets = await chooseCallRecipients('audio'); if (targets?.length) startCall('audio', true, null, targets); };
+$('videoBtn').onclick = async () => { const targets = await chooseCallRecipients('video'); if (targets?.length) startCall('video', true, null, targets); };
 $('muteBtn').onclick = () => {
   const tracks = localStream?.getAudioTracks() || [];
   if (!tracks.length) return;
@@ -736,12 +884,12 @@ function makePeer(id, offer, transport = null) {
   localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
   pc.onicecandidate = event => { if (event.candidate) channel?.emit('signal', { to: id, candidate: event.candidate }); };
   pc.ontrack = event => {
-    const stream = event.streams[0];
+    const stream = event.streams[0] || new MediaStream([event.track]);
     if (!stream) return;
     if (callMode === 'video') {
-      if (!$(`[data-peer="${id}"]`)) addVideo('مشارك', stream, false, id);
+      if (event.track.kind === 'video') addVideo('مشارك', stream, false, id);
     } else {
-      let audio = $(`audio[data-peer="${id}"]`);
+      let audio = document.querySelector(`audio[data-peer="${CSS.escape(String(id))}"]`);
       if (!audio) { audio = document.createElement('audio'); audio.autoplay = true; audio.dataset.peer = id; $('audioNodes').append(audio); }
       audio.srcObject = stream;
     }
@@ -758,6 +906,7 @@ function makePeer(id, offer, transport = null) {
 function removeCallPeer(id) {
   const pc = peers.get(id); if (pc) { pc.close(); peers.delete(id); }
   deferredDescriptions.delete(id); deferredCandidates.delete(id); signalSockets.delete(id);
+  remoteMediaElements.delete(id);
   document.querySelectorAll(`[data-peer="${CSS.escape(String(id))}"]`).forEach(node => node.remove());
 }
 async function processDescription(id, packet) {
@@ -784,19 +933,22 @@ async function receiveSignal(packet, source = socket) {
   if (packet.description?.type === 'call-roster') {
     if (!localStream || connectionMode !== 'host') return;
     const participants = packet.description.participants || [];
+    const expected = new Set(participants.filter(id => typeof id === 'string' && id !== window._socketId));
+    for (const id of peers.keys()) if (!expected.has(id)) removeCallPeer(id);
     for (const entry of participants) {
       const id = typeof entry === 'string' ? entry : '';
       if (!id || id === window._socketId || peers.has(id)) continue;
       const initiate = String(window._socketId).localeCompare(id) < 0;
       makePeer(id, initiate, source);
     }
-    $('callStatus').textContent = `${peers.size + 1} مشاركون · اتصال مباشر داخل الشبكة`;
+    $('callStatus').textContent = `${participants.length} مشاركون · اتصال مباشر داخل الشبكة`;
     return;
   }
   if (packet.description?.type === 'call-start') {
     if (localStream) return;
     if (acceptingCall) return;
     acceptingCall = true;
+    playNotification('call');
     try {
       const mode = packet.description.mode === 'video' ? 'video' : 'audio';
       callOwnerId = packet.from;
@@ -828,6 +980,7 @@ function closeCall(notify = true) {
   peers.clear(); deferredDescriptions.clear(); deferredCandidates.clear(); signalSockets.clear(); callTransport = null; callPeerId = null; callOwnerId = null;
   localStream?.getTracks().forEach(track => track.stop()); localStream = null; callMode = null;
   $('callPanel').classList.add('hidden'); $('audioNodes').innerHTML = '';
+  $('videoGrid').innerHTML = ''; remoteMediaElements.clear();
 }
 window.addEventListener('beforeunload', () => { if (callMode) (callTransport || socket)?.emit('signal', { ...(connectionMode === 'direct' && callPeerId ? { to: callPeerId } : {}), description: { type: 'call-end' } }); socket?.disconnect(); });
 window.wasel.lanInfo().then(info => {
@@ -869,6 +1022,8 @@ async function loadSettings(openDialog = false) {
     $('autoConnectCheck').checked = appSettings.autoConnect !== false;
     $('openAtLoginCheck').checked = Boolean(appSettings.openAtLogin);
     $('themeSelect').value = appSettings.theme || 'light';
+    $('defaultSaveDirectory').value = appSettings.defaultSaveDirectory || '';
+    $('soundNotificationsCheck').checked = appSettings.soundNotifications !== false;
     const rememberedName = localStorage.getItem('wasel-name');
     $('displayNameInput').value = rememberedName || '';
     applyTheme(appSettings.theme || 'light');
@@ -891,7 +1046,9 @@ $('saveSettingsBtn').onclick = async () => {
     discoveryIntervalMs: Number($('discoveryIntervalSelect').value),
     autoConnect: $('autoConnectCheck').checked,
     openAtLogin: $('openAtLoginCheck').checked,
-    theme: $('themeSelect').value
+    theme: $('themeSelect').value,
+    defaultSaveDirectory: $('defaultSaveDirectory').value.trim(),
+    soundNotifications: $('soundNotificationsCheck').checked
   };
   $('saveSettingsBtn').disabled = true;
   try {
@@ -927,5 +1084,11 @@ $('copyLocalIpBtn').onclick = async () => {
   catch (_) { $('manualHostInput').value = address; $('manualHostInput').focus(); toast('نُقل عنوان IP إلى خانة الاتصال اليدوي.'); }
 };
 $('themeSelect').onchange = event => applyTheme(event.target.value);
+$('chooseSaveDirectoryBtn').onclick = async () => {
+  try {
+    const result = await window.wasel.chooseSaveDirectory();
+    if (result.path) $('defaultSaveDirectory').value = result.path;
+  } catch (error) { toast(`تعذر اختيار مجلد الحفظ: ${error.message}`); }
+};
 window.wasel.onSettingsUpdated(view => { appSettings = view.settings || appSettings; renderNetworkSettings(view); applyTheme(appSettings.theme); });
 loadSettings(false);

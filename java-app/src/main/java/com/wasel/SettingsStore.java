@@ -8,8 +8,10 @@ import java.net.Inet4Address;
 import java.net.NetworkInterface;
 import java.net.SocketException;
 import java.nio.file.Files;
+import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.InvalidPathException;
 import java.util.ArrayList;
 import java.util.Enumeration;
 import java.util.List;
@@ -40,6 +42,12 @@ public final class SettingsStore {
         public boolean autoConnect = true;
         public boolean openAtLogin = false;
         public String theme = "light";
+        public String defaultSaveDirectory = defaultSaveDirectory();
+        public boolean soundNotifications = true;
+    }
+
+    private static String defaultSaveDirectory() {
+        return Path.of(System.getProperty("user.home", ".")).toAbsolutePath().normalize().resolve("Downloads").toString();
     }
 
     public static List<Adapter> adapters() {
@@ -102,7 +110,16 @@ public final class SettingsStore {
         clean.autoConnect = value.autoConnect;
         clean.openAtLogin = value.openAtLogin;
         clean.theme = List.of("light", "dark", "system").contains(value.theme) ? value.theme : "light";
+        clean.defaultSaveDirectory = normalizeSaveDirectory(value.defaultSaveDirectory);
+        clean.soundNotifications = value.soundNotifications;
         return clean;
+    }
+
+    private static String normalizeSaveDirectory(String directory) {
+        if (directory == null) return defaultSaveDirectory();
+        if (directory.isBlank()) return "";
+        try { return Path.of(directory.strip()).toAbsolutePath().normalize().toString(); }
+        catch (InvalidPathException | SecurityException ex) { return defaultSaveDirectory(); }
     }
 
     public static Settings load(Path file, List<Adapter> adapters) {

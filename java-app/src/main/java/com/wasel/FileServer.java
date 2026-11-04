@@ -19,6 +19,7 @@ import java.util.concurrent.Executors;
 public final class FileServer implements AutoCloseable {
     private static final int STREAM_BUFFER_BYTES = 256 * 1024;
     private static final long MAX_PREVIEW_BYTES = 8L * 1024 * 1024;
+    private static final long MAX_DOCUMENT_PREVIEW_BYTES = 32L * 1024 * 1024;
     private final RoomStore store;
     private final int port;
     private HttpServer server;
@@ -41,20 +42,24 @@ public final class FileServer implements AutoCloseable {
         try { id = URLDecoder.decode(id, StandardCharsets.UTF_8); } catch (IllegalArgumentException ex) { reply(exchange, 400, "معرف الملف غير صالح."); return; }
         Path file = store.filePath(id); JsonObject item = store.message(id);
         if (file == null || item == null) { reply(exchange, 404, "الملف غير موجود."); return; }
-        String mime = text(item, "mime", "application/octet-stream").toLowerCase(Locale.ROOT);
+        String mime = text(item, "mime", "application/octet-stream").toLowerCase(Locale.ROOT).split(";", 2)[0].strip();
         boolean preview = exchange.getRequestURI().getRawQuery() != null && exchange.getRequestURI().getRawQuery().contains("preview=1");
-        if (preview && !mime.matches("image/(png|jpeg|gif|webp|avif)")) { reply(exchange, 415, "معاينة هذا النوع غير مدعومة."); return; }
+        boolean imagePreview = mime.matches("image/(png|jpeg|gif|webp|avif)");
+        boolean streamingPreview = mime.matches("audio/(mpeg|ogg|wav|webm|mp4|aac|flac)|video/(mp4|webm|ogg|mpeg|quicktime)");
+        boolean documentPreview = mime.equals("application/pdf") || mime.equals("text/plain");
+        if (preview && !(imagePreview || streamingPreview || documentPreview)) { reply(exchange, 415, "معاينة هذا النوع غير مدعومة."); return; }
         long size = Files.size(file);
-        if (preview && size > MAX_PREVIEW_BYTES) { reply(exchange, 413, "حجم الصورة كبير للمعاينة؛ نزّل الملف لعرضه."); return; }
+        if (preview && imagePreview && size > MAX_PREVIEW_BYTES) { reply(exchange, 413, "حجم الصورة كبير للمعاينة؛ نزّلها لعرضها."); return; }
+        if (preview && documentPreview && size > MAX_DOCUMENT_PREVIEW_BYTES) { reply(exchange, 413, "حجم المستند كبير للمعاينة؛ نزّله لعرضه."); return; }
         String name = text(item, "name", "shared-file").replaceAll("[\\r\\n\\\"]", "_");
         var headers = exchange.getResponseHeaders();
         headers.set("X-Content-Type-Options", "nosniff"); headers.set("Accept-Ranges", "bytes"); headers.set("Connection", "close");
         headers.set("Cache-Control", preview ? "private, max-age=300" : "no-store");
         headers.set("Content-Type", preview ? mime : "application/octet-stream");
-        if (!preview) headers.set("Content-Disposition", "attachment; filename*=UTF-8''" + java.net.URLEncoder.encode(name, StandardCharsets.UTF_8).replace("+", "%20"));
+        headers.set("Content-Disposition", (preview ? "inline" : "attachment") + "; filename*=UTF-8''" + java.net.URLEncoder.encode(name, StandardCharsets.UTF_8).replace("+", "%20"));
         long start = 0, end = Math.max(0, size - 1); int status = 200;
         String range = exchange.getRequestHeaders().getFirst("Range");
-        if (range != null && !preview) {
+        if (range != null && (!preview || streamingPreview)) {
             long[] requested = parseRange(range, size);
             if (requested == null) { headers.set("Content-Range", "bytes */" + size); reply(exchange, 416, "نطاق التنزيل غير صالح."); return; }
             start = requested[0]; end = requested[1]; status = 206;

@@ -14,6 +14,7 @@
     lanInfo: () => request('/api/lan-info'),
     getSettings: () => request('/api/settings'),
     saveSettings: settings => request('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ settings }) }),
+    chooseSaveDirectory: () => request('/api/choose-save-directory', { method: 'POST' }),
     onRoomFound: fn => { const list = callbacks.get('room-found') || []; list.push(fn); callbacks.set('room-found', list); },
     onPeerFound: fn => { const list = callbacks.get('peer-found') || []; list.push(fn); callbacks.set('peer-found', list); },
     onRoomStarted: fn => { const list = callbacks.get('room-started') || []; list.push(fn); callbacks.set('room-started', list); },

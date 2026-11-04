@@ -19,8 +19,12 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
 
 public final class WaselRuntime implements AutoCloseable {
     private static final Gson GSON = new Gson();
@@ -35,6 +39,7 @@ public final class WaselRuntime implements AutoCloseable {
     private FileServer fileServer;
     private LanRoomServer roomServer;
     private LanRoomServer peerServer;
+    private volatile Consumer<CompletableFuture<Path>> directoryChooser;
 
     public WaselRuntime() throws IOException {
         dataRoot = resolveDataRoot(); settingsPath = dataRoot.resolve("settings.json"); Files.createDirectories(dataRoot);
@@ -46,6 +51,7 @@ public final class WaselRuntime implements AutoCloseable {
         uiServer = HttpServer.create(new InetSocketAddress(InetAddress.getByName("127.0.0.1"), UI_PORT), 16);
         uiServer.createContext("/api/lan-info", this::handleLanInfo);
         uiServer.createContext("/api/settings", this::handleSettings);
+        uiServer.createContext("/api/choose-save-directory", this::handleChooseSaveDirectory);
         uiServer.createContext("/api/start-room", this::handleStartRoom);
         uiServer.createContext("/api/start-peer", this::handleStartPeer);
         uiServer.createContext("/api/stop-peer", this::handleStopPeer);
@@ -57,6 +63,25 @@ public final class WaselRuntime implements AutoCloseable {
 
     public String startUrl() { return "http://127.0.0.1:" + UI_PORT + "/"; }
     public Path dataRoot() { return dataRoot; }
+    public Path defaultSaveDirectory() {
+        String configured = settings.defaultSaveDirectory;
+        return configured == null || configured.isBlank() ? null : Path.of(configured).toAbsolutePath().normalize();
+    }
+    public void setDirectoryChooser(Consumer<CompletableFuture<Path>> chooser) { directoryChooser = chooser; }
+
+    private void handleChooseSaveDirectory(HttpExchange exchange) throws IOException {
+        if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) { reply(exchange,405,"الطلب غير مدعوم."); return; }
+        Consumer<CompletableFuture<Path>> chooser = directoryChooser;
+        if (chooser == null) { json(exchange,503,error("اختيار المجلد غير متاح.")); return; }
+        CompletableFuture<Path> selected = new CompletableFuture<>();
+        try {
+            chooser.accept(selected);
+            Path result = selected.get(120, TimeUnit.SECONDS);
+            JsonObject response = new JsonObject(); response.addProperty("ok", true);
+            response.addProperty("path", result == null ? "" : result.toAbsolutePath().normalize().toString()); json(exchange,200,response);
+        } catch (TimeoutException ex) { json(exchange,504,error("انتهت مهلة اختيار المجلد.")); }
+        catch (Exception ex) { json(exchange,200,error("تعذر اختيار المجلد.")); }
+    }
 
     public static Path resolveDataRoot() {
         String os = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
@@ -120,7 +145,7 @@ public final class WaselRuntime implements AutoCloseable {
 
     private JsonObject settingsView() {
         JsonObject out=new JsonObject(); out.add("settings",SettingsStore.toJson(settings)); out.add("adapters",GSON.toJsonTree(SettingsStore.adapters()));
-        out.addProperty("hostname",safeHost()); out.addProperty("appVersion","0.7.0"); out.addProperty("platform",System.getProperty("os.name")); return out;
+        out.addProperty("hostname",safeHost()); out.addProperty("appVersion","0.8.0"); out.addProperty("platform",System.getProperty("os.name")); return out;
     }
 
     private synchronized void handleStartPeer(HttpExchange exchange) throws IOException {

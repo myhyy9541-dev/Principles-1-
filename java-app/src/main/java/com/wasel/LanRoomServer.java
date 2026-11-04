@@ -71,11 +71,6 @@ public final class LanRoomServer implements AutoCloseable {
         send(client, "groups", store.visibleGroups(clientId)); send(client, "contacts", contactList());
         broadcastContacts(); broadcastMembers();
         JsonObject system = new JsonObject(); system.addProperty("text", name + " انضم إلى الغرفة"); system.addProperty("time", System.currentTimeMillis()); broadcast("system-message", system);
-        JsonObject call = activeCall;
-        if (call != null && !text(call, "owner", "").equals(client.getSessionId().toString())) {
-            JsonArray invited = call.getAsJsonArray("invited"); if (invited != null) invited.add(client.getSessionId().toString());
-            JsonObject packet = new JsonObject(); packet.addProperty("from", text(call, "owner", "")); packet.add("description", obj("type", "call-start", "mode", text(call, "mode", "audio"))); send(client, "signal", packet);
-        }
     }
 
     private void historyBefore(SocketIOClient client, JsonObject raw) {
@@ -234,8 +229,23 @@ public final class LanRoomServer implements AutoCloseable {
             if (activeCall != null) { send(client, "notice", "توجد مكالمة جماعية نشطة بالفعل."); return; }
             JsonObject call = new JsonObject(); call.addProperty("owner", client.getSessionId().toString()); call.addProperty("mode", "video".equals(text(description, "mode", "")) ? "video" : "audio");
             JsonArray participants = new JsonArray(); participants.add(client.getSessionId().toString()); call.add("participants", participants);
-            JsonArray invited = new JsonArray(); for (SocketIOClient target : onlineClients()) if (!target.getSessionId().equals(client.getSessionId())) invited.add(target.getSessionId().toString()); call.add("invited", invited); activeCall = call;
-            JsonObject notice = new JsonObject(); notice.addProperty("from", client.getSessionId().toString()); notice.add("description", obj("type", "call-start", "mode", text(call, "mode", "audio"))); broadcastExcept(client, "signal", notice);
+            JsonArray invited = new JsonArray(); call.add("invited", invited);
+            List<SocketIOClient> targets = new ArrayList<>();
+            if (packet.has("targetClientIds") && packet.get("targetClientIds").isJsonArray()) {
+                Set<String> requested = new java.util.LinkedHashSet<>();
+                for (JsonElement element : packet.getAsJsonArray("targetClientIds")) if (element.isJsonPrimitive()) requested.add(element.getAsString());
+                for (String targetId : requested) { SocketIOClient target = socketForClient(targetId); if (target != null && !target.getSessionId().equals(client.getSessionId())) targets.add(target); }
+            } else {
+                for (SocketIOClient target : onlineClients()) if (!target.getSessionId().equals(client.getSessionId())) targets.add(target);
+            }
+            if (targets.isEmpty()) { send(client, "notice", "لم يعد أي من المستخدمين المختارين متصلاً؛ أعد المحاولة."); return; }
+            for (SocketIOClient target : targets) invited.add(target.getSessionId().toString());
+            activeCall = call;
+            for (SocketIOClient target : targets) {
+                JsonObject invitation = new JsonObject(); invitation.addProperty("from", client.getSessionId().toString());
+                invitation.add("description", obj("type", "call-start", "mode", text(call, "mode", "audio")));
+                send(target, "signal", invitation);
+            }
         } else if (description != null && "call-accept".equals(text(description, "type", ""))) {
             JsonObject call = activeCall; if (call == null) { send(client, "notice", "انتهت الدعوة قبل قبولها."); return; }
             JsonArray invited = call.getAsJsonArray("invited"); String id = client.getSessionId().toString(); boolean wasInvited = false;
@@ -248,11 +258,20 @@ public final class LanRoomServer implements AutoCloseable {
         } else if (description != null && "call-end-all".equals(text(description, "type", ""))) {
             JsonObject call = activeCall;
             if (call != null && text(call, "owner", "").equals(client.getSessionId().toString())) {
-                activeCall = null; JsonObject end = new JsonObject(); end.addProperty("from", client.getSessionId().toString()); end.add("description", obj("type", "call-end-all")); broadcast("signal", end);
+                endCall(call, client.getSessionId().toString());
             }
         } else if (description != null && "call-end".equals(text(description, "type", ""))) {
             String to = text(packet, "to", "");
-            if (!to.isBlank()) { forwardSignal(client, packet, description); return; }
+            if (!to.isBlank()) {
+                JsonObject call = activeCall;
+                if (call != null && text(call, "owner", "").equals(to)) {
+                    JsonArray invited = call.getAsJsonArray("invited");
+                    if (invited != null) for (int i = invited.size() - 1; i >= 0; i--) if (client.getSessionId().toString().equals(invited.get(i).getAsString())) invited.remove(i);
+                }
+                forwardSignal(client, packet, description);
+                if (call != null && text(call, "owner", "").equals(to) && call.getAsJsonArray("invited").isEmpty() && call.getAsJsonArray("participants").size() <= 1) endCall(call, client.getSessionId().toString());
+                return;
+            }
             removeCallParticipant(client.getSessionId().toString());
         } else {
             forwardSignal(client, packet, description);
@@ -285,12 +304,23 @@ public final class LanRoomServer implements AutoCloseable {
             catch (IllegalArgumentException ignored) { }
         }
         if (participants.size() <= 1) {
-            activeCall = null; JsonObject end = new JsonObject(); end.addProperty("from", sessionId); end.add("description", obj("type", "call-end-all"));
-            for (JsonElement item : participants) {
-                try { SocketIOClient target = server.getClient(UUID.fromString(item.getAsString())); if (target != null) send(target, "signal", end); }
-                catch (IllegalArgumentException ignored) { }
-            }
+            endCall(call, sessionId);
         } else broadcastCallRoster(call);
+    }
+
+    private void endCall(JsonObject call, String from) {
+        if (call == null) return;
+        if (activeCall == call) activeCall = null;
+        JsonObject end = new JsonObject(); end.addProperty("from", from); end.add("description", obj("type", "call-end-all"));
+        Set<String> recipients = new java.util.LinkedHashSet<>();
+        for (String key : List.of("participants", "invited")) {
+            JsonArray values = call.getAsJsonArray(key);
+            if (values != null) for (JsonElement value : values) if (value.isJsonPrimitive()) recipients.add(value.getAsString());
+        }
+        for (String id : recipients) {
+            try { SocketIOClient target = server.getClient(UUID.fromString(id)); if (target != null) send(target, "signal", end); }
+            catch (IllegalArgumentException ignored) { }
+        }
     }
 
     private void onDisconnect(SocketIOClient client) {
@@ -298,7 +328,7 @@ public final class LanRoomServer implements AutoCloseable {
         if (user == null) return;
         if (activeCall != null) {
             if (text(activeCall, "owner", "").equals(client.getSessionId().toString())) {
-                activeCall = null; JsonObject event = new JsonObject(); event.addProperty("from", client.getSessionId().toString()); event.add("description", obj("type", "call-end-all")); broadcast("signal", event);
+                endCall(activeCall, client.getSessionId().toString());
             } else removeCallParticipant(client.getSessionId().toString());
         }
         broadcastContacts(); broadcastMembers();

@@ -47,6 +47,16 @@ public final class WaselApplication {
             processLock = lockChannel.tryLock();
             if (processLock == null) { showError("واصل يعمل بالفعل على هذا الجهاز."); lockChannel.close(); lockChannel=null; return; }
             runtime = new WaselRuntime();
+            runtime.setDirectoryChooser(result -> SwingUtilities.invokeLater(() -> {
+                try {
+                    JFileChooser chooser = new JFileChooser(); chooser.setDialogTitle("اختيار مجلد الحفظ");
+                    chooser.setFileSelectionMode(JFileChooser.DIRECTORIES_ONLY);
+                    chooser.setAcceptAllFileFilterUsed(false);
+                    int choice = chooser.showOpenDialog(frame);
+                    result.complete(choice == JFileChooser.APPROVE_OPTION && chooser.getSelectedFile() != null
+                            ? chooser.getSelectedFile().toPath().toAbsolutePath().normalize() : null);
+                } catch (Exception ex) { result.completeExceptionally(ex); }
+            }));
             CefAppBuilder builder = new CefAppBuilder();
             builder.setInstallDir(runtime.dataRoot().resolve("jcef-runtime").toFile());
             builder.setAppHandler(new MavenCefAppHandlerAdapter() { });
@@ -115,6 +125,14 @@ public final class WaselApplication {
     private void installDownloadHandler() {
         cefClient.addDownloadHandler(new CefDownloadHandler() {
             @Override public boolean onBeforeDownload(CefBrowser source, CefDownloadItem item, String suggestedName, CefBeforeDownloadCallback callback) {
+                Path defaultDirectory = runtime.defaultSaveDirectory();
+                if (defaultDirectory != null) {
+                    try {
+                        Files.createDirectories(defaultDirectory);
+                        callback.Continue(uniqueDestination(defaultDirectory, safeDownloadName(suggestedName)).toString(), false);
+                    } catch (Exception ex) { callback.Continue("", false); }
+                    return true;
+                }
                 SwingUtilities.invokeLater(() -> {
                     try {
                         JFileChooser chooser = new JFileChooser(); chooser.setDialogTitle("حفظ الملف المشترك"); chooser.setDialogType(JFileChooser.SAVE_DIALOG);
@@ -127,6 +145,25 @@ public final class WaselApplication {
             }
             @Override public void onDownloadUpdated(CefBrowser source, CefDownloadItem item, CefDownloadItemCallback callback) { }
         });
+    }
+
+    private static String safeDownloadName(String suggestedName) {
+        String name = suggestedName == null ? "" : suggestedName.replace('\\', '/');
+        name = name.substring(name.lastIndexOf('/') + 1).replaceAll("[\\p{Cntrl}<>:\"|?*]", "_").strip();
+        return name.isBlank() || name.equals(".") || name.equals("..") ? "shared-file" : name;
+    }
+
+    private static Path uniqueDestination(Path directory, String filename) throws IOException {
+        Path candidate = directory.resolve(filename);
+        if (!Files.exists(candidate)) return candidate;
+        String extension = ""; String base = filename;
+        int dot = filename.lastIndexOf('.');
+        if (dot > 0) { base = filename.substring(0, dot); extension = filename.substring(dot); }
+        for (int index = 2; index < Integer.MAX_VALUE; index++) {
+            candidate = directory.resolve(base + " (" + index + ")" + extension);
+            if (!Files.exists(candidate)) return candidate;
+        }
+        throw new IOException("No available destination filename");
     }
 
     private void installJsDialogHandler() {
