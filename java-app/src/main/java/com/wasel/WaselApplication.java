@@ -8,6 +8,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.Vector;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import javax.swing.JFileChooser;
 import javax.swing.JFrame;
 import javax.swing.JOptionPane;
@@ -37,6 +39,9 @@ public final class WaselApplication {
     private JFrame frame;
     private FileChannel lockChannel;
     private FileLock processLock;
+    private final ExecutorService downloadPreparation = Executors.newSingleThreadExecutor(r -> {
+        Thread thread = new Thread(r, "wasel-download-prepare"); thread.setDaemon(true); return thread;
+    });
 
     public static void main(String[] args) { new WaselApplication().start(); }
 
@@ -127,10 +132,20 @@ public final class WaselApplication {
             @Override public boolean onBeforeDownload(CefBrowser source, CefDownloadItem item, String suggestedName, CefBeforeDownloadCallback callback) {
                 Path defaultDirectory = runtime.defaultSaveDirectory();
                 if (defaultDirectory != null) {
-                    try {
-                        Files.createDirectories(defaultDirectory);
-                        callback.Continue(uniqueDestination(defaultDirectory, safeDownloadName(suggestedName)).toString(), false);
-                    } catch (Exception ex) { callback.Continue("", false); }
+                    downloadPreparation.execute(() -> {
+                        String destination;
+                        try {
+                            Files.createDirectories(defaultDirectory);
+                            destination = uniqueDestination(defaultDirectory, safeDownloadName(suggestedName)).toString();
+                        } catch (Exception ex) {
+                            SwingUtilities.invokeLater(() -> {
+                                JOptionPane.showMessageDialog(frame, "تعذر حفظ الملف في المجلد المحدد. اختر موضعاً آخر للحفظ.", "واصل", JOptionPane.WARNING_MESSAGE);
+                                callback.Continue("", true);
+                            });
+                            return;
+                        }
+                        callback.Continue(destination, false);
+                    });
                     return true;
                 }
                 SwingUtilities.invokeLater(() -> {
@@ -190,6 +205,7 @@ public final class WaselApplication {
     }
 
     private synchronized void shutdown() {
+        downloadPreparation.shutdownNow();
         if (runtime != null) runtime.close();
         if (browser != null) try { browser.close(true); } catch (Exception ignored) { }
         if (cefClient != null) try { cefClient.dispose(); } catch (Exception ignored) { }

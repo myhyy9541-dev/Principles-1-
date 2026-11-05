@@ -73,9 +73,17 @@ public final class FileServer implements AutoCloseable {
         try (FileChannel channel = FileChannel.open(file, StandardOpenOption.READ);
              var output = new BufferedOutputStream(exchange.getResponseBody(), STREAM_BUFFER_BYTES)) {
             channel.position(start); ByteBuffer buffer = ByteBuffer.allocate(STREAM_BUFFER_BYTES); long remaining = length;
+            int consecutiveEmptyReads = 0;
             while (remaining > 0) {
                 buffer.clear(); buffer.limit((int) Math.min(buffer.capacity(), remaining));
-                int read = channel.read(buffer); if (read < 0) break;
+                int read = channel.read(buffer);
+                if (read < 0) break;
+                if (read == 0) {
+                    if (++consecutiveEmptyReads >= 16) throw new IOException("File stream made no progress.");
+                    Thread.yield();
+                    continue;
+                }
+                consecutiveEmptyReads = 0;
                 output.write(buffer.array(), 0, read); remaining -= read;
             }
         } catch (IOException ex) {

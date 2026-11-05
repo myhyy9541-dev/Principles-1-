@@ -7,6 +7,7 @@ import java.net.DatagramSocket;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -34,10 +35,13 @@ public final class LanDiscovery implements AutoCloseable {
     private volatile String peerClientId = "";
     private volatile String peerName = "";
     private volatile DatagramSocket socket;
+    private volatile List<BroadcastSender> broadcastSenders = List.of();
     private volatile Thread listenerThread;
     private volatile ScheduledFuture<?> announcementTask;
     private volatile String broadcastAddress = "255.255.255.255";
     private volatile String bindAddress = "0.0.0.0";
+
+    private record BroadcastSender(DatagramSocket socket, String broadcastAddress) { }
 
     public LanDiscovery(String hostname, SettingsStore.Settings initial, Consumer<JsonObject> roomFound, Consumer<JsonObject> peerFound) {
         this.hostname = hostname; this.settings = initial; this.roomFound = roomFound; this.peerFound = peerFound;
@@ -58,10 +62,26 @@ public final class LanDiscovery implements AutoCloseable {
     private synchronized void startSocket() {
         if (closed.get()) return;
         if (socket != null) socket.close();
+        for (BroadcastSender sender : broadcastSenders) sender.socket().close();
+        broadcastSenders = List.of();
         List<SettingsStore.Adapter> adapters = SettingsStore.adapters();
         SettingsStore.Adapter selected = adapters.stream().filter(a -> a.id.equals(settings.networkInterface)).findFirst().orElse(null);
         bindAddress = selected == null ? "0.0.0.0" : selected.address;
-        broadcastAddress = selected == null ? "255.255.255.255" : selected.broadcast;
+        List<SettingsStore.Adapter> targets = discoveryTargets(settings, adapters);
+        broadcastAddress = targets.isEmpty() ? "255.255.255.255" : targets.get(0).broadcast;
+        List<BroadcastSender> senders = new ArrayList<>();
+        for (SettingsStore.Adapter adapter : targets) {
+            DatagramSocket sender = null;
+            try {
+                sender = new DatagramSocket(null); sender.setReuseAddress(true); sender.setBroadcast(true);
+                sender.bind(new InetSocketAddress(InetAddress.getByName(adapter.address), 0));
+                senders.add(new BroadcastSender(sender, adapter.broadcast));
+            } catch (Exception ex) {
+                if (sender != null) sender.close();
+                System.err.println("Wasel discovery sender could not bind " + adapter.address + ": " + ex.getMessage());
+            }
+        }
+        broadcastSenders = List.copyOf(senders);
         try {
             DatagramSocket next = new DatagramSocket(null); next.setReuseAddress(true); next.setBroadcast(true);
             next.bind(new InetSocketAddress(InetAddress.getByName(bindAddress), DISCOVERY_PORT));
@@ -69,8 +89,15 @@ public final class LanDiscovery implements AutoCloseable {
             listenerThread = new Thread(() -> listen(next), "wasel-discovery-listener"); listenerThread.setDaemon(true); listenerThread.start();
         } catch (Exception ex) {
             socket = null;
+            for (BroadcastSender sender : broadcastSenders) sender.socket().close();
+            broadcastSenders = List.of();
             System.err.println("Wasel UDP discovery could not bind " + bindAddress + ": " + ex.getMessage());
         }
+    }
+
+    static List<SettingsStore.Adapter> discoveryTargets(SettingsStore.Settings settings, List<SettingsStore.Adapter> adapters) {
+        SettingsStore.Adapter selected = adapters.stream().filter(adapter -> adapter.id.equals(settings.networkInterface)).findFirst().orElse(null);
+        return selected == null ? List.copyOf(adapters) : List.of(selected);
     }
 
     private synchronized void restartAnnouncements() {
@@ -124,7 +151,17 @@ public final class LanDiscovery implements AutoCloseable {
 
     private void send(DatagramSocket active, JsonObject message) throws Exception {
         byte[] data = GSON.toJson(message).getBytes(StandardCharsets.UTF_8);
-        active.send(new DatagramPacket(data, data.length, InetAddress.getByName(broadcastAddress), DISCOVERY_PORT));
+        boolean sent = false;
+        for (BroadcastSender sender : broadcastSenders) {
+            try {
+                sender.socket().send(new DatagramPacket(data, data.length, InetAddress.getByName(sender.broadcastAddress()), DISCOVERY_PORT));
+                sent = true;
+            } catch (Exception ex) {
+                if (!sender.socket().isClosed()) System.err.println("Wasel discovery send on " + sender.broadcastAddress() + ": " + ex.getMessage());
+            }
+        }
+        if (!sent && active != null && !active.isClosed())
+            active.send(new DatagramPacket(data, data.length, InetAddress.getByName(broadcastAddress), DISCOVERY_PORT));
     }
 
     public static String text(JsonObject object, String key, String fallback) {
@@ -136,6 +173,8 @@ public final class LanDiscovery implements AutoCloseable {
         if (!closed.compareAndSet(false, true)) return;
         if (announcementTask != null) announcementTask.cancel(true);
         scheduler.shutdownNow(); if (socket != null) socket.close();
+        for (BroadcastSender sender : broadcastSenders) sender.socket().close();
+        broadcastSenders = List.of();
         if (listenerThread != null) listenerThread.interrupt();
     }
 }

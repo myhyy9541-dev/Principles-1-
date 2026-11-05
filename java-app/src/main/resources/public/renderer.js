@@ -126,6 +126,12 @@ function showFilePreview(message) {
   dialog.showModal();
 }
 $('messages').addEventListener('click', event => {
+  const thumbnail = event.target.closest('.image-preview');
+  if (thumbnail) {
+    const message = messageById.get(thumbnail.closest('.message')?.dataset.messageId);
+    if (message?.type === 'file') showFilePreview(message);
+    return;
+  }
   const button = event.target.closest('[data-preview-id]');
   if (!button) return;
   const message = messageById.get(button.dataset.previewId);
@@ -293,6 +299,19 @@ function markVisibleRead(messages) {
   }
   for (const [source, ids] of pending) for (let i = 0; i < ids.length; i += 500) source.emit('mark-read', { ids: ids.slice(i, i + 500) });
 }
+function updateDeliveryBadge(message) {
+  const mine = message.senderClientId ? message.senderClientId === clientId : message.senderId === window._socketId;
+  if (!mine || message.channel === 'general') return;
+  const row = [...$('messages').querySelectorAll('.message')].find(item => item.dataset.messageId === message.id);
+  if (!row) return;
+  let badge = row.querySelector('.delivery-state');
+  if (!badge) {
+    badge = document.createElement('span'); badge.className = 'delivery-state';
+    row.querySelector('.msg-meta')?.append(badge);
+  }
+  badge.textContent = (message.readBy || []).length ? '✓✓ تمت القراءة'
+    : (message.deliveredTo || []).length ? '✓ تم التسليم' : '◷ قيد التسليم';
+}
 function formatSize(bytes = 0) {
   if (bytes >= 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} غ.ب`;
   return bytes < 1024 * 1024 ? `${Math.max(1, Math.round(bytes / 1024))} ك.ب` : `${(bytes / 1024 / 1024).toFixed(1)} م.ب`;
@@ -405,13 +424,12 @@ function handleEvent(event, data, source = socket) {
       break;
     }
     case 'message-receipt': {
-      const ids = Array.isArray(data.ids) ? data.ids : [data.id]; let changed = false;
+      const ids = Array.isArray(data.ids) ? data.ids : [data.id];
       for (const id of ids) {
         const message = messageById.get(id); if (!message) continue;
         const key = data.kind === 'read' ? 'readBy' : 'deliveredTo'; message[key] ||= [];
-        if (!message[key].includes(data.clientId)) { message[key].push(data.clientId); changed = true; }
+        if (!message[key].includes(data.clientId)) { message[key].push(data.clientId); updateDeliveryBadge(message); }
       }
-      if (changed) renderMessages();
       break;
     }
     case 'notice': toast(data); break;
@@ -469,10 +487,12 @@ function bindPeerSocket(peerSocket, peer = null, local = false) {
 function connectPeer(peer) {
   if (!p2pActive || connectionMode !== 'direct' || !peer?.clientId || peer.clientId === clientId) return;
   const previous = peerSockets.get(peer.clientId);
+  if (previous?.socket.connected) return;
   if (previous && previous.info.address === peer.address && previous.socket.active) return;
+  if (previous && Date.now() - (previous.attemptedAt || 0) < 5000) return;
   if (previous) { previous.socket.disconnect(); peerSockets.delete(peer.clientId); }
   const peerSocket = window.io(`http://${peer.address}:${peer.port || 43823}`, { transports: ['websocket', 'polling'], timeout: 5000, reconnection: true });
-  peerSockets.set(peer.clientId, { socket: peerSocket, info: peer, remoteSessionId: null });
+  peerSockets.set(peer.clientId, { socket: peerSocket, info: peer, remoteSessionId: null, attemptedAt: Date.now() });
   bindPeerSocket(peerSocket, peer, false);
 }
 async function startPeerMode() {
@@ -530,7 +550,8 @@ window.wasel.onRoomFound(room => {
 window.wasel.onPeerFound(peer => {
   if (!peer.clientId || peer.clientId === clientId) return;
   const old = discoveredPeers.get(peer.clientId);
-  if (old && old.address !== peer.address) { peerSockets.get(peer.clientId)?.socket.disconnect(); peerSockets.delete(peer.clientId); }
+  const connection = peerSockets.get(peer.clientId);
+  if (old && old.address !== peer.address && connection?.socket.connected) peer.address = connection.info.address;
   peer.lastSeen = Date.now(); discoveredPeers.set(peer.clientId, peer);
   if (connectionMode === 'direct' && p2pActive) connectPeer(peer);
   if (connectionMode === 'direct') refreshPeerContacts();

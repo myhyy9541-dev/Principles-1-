@@ -37,6 +37,15 @@ class CoreServicesTest {
         assertEquals("255.255.255.255", SettingsStore.broadcastAddress("bad", "mask"));
     }
 
+    @Test void autoDiscoveryTargetsAllAdaptersButExplicitSelectionStaysScoped() {
+        var wifi = new SettingsStore.Adapter("wifi@192.168.10.4", "Wi-Fi", "192.168.10.4", "255.255.255.0", "", "192.168.10.255");
+        var ethernet = new SettingsStore.Adapter("ethernet@10.2.0.4", "Ethernet", "10.2.0.4", "255.255.0.0", "", "10.2.255.255");
+        var settings = new SettingsStore.Settings();
+        assertEquals(List.of(wifi, ethernet), LanDiscovery.discoveryTargets(settings, List.of(wifi, ethernet)));
+        settings.networkInterface = ethernet.id;
+        assertEquals(List.of(ethernet), LanDiscovery.discoveryTargets(settings, List.of(wifi, ethernet)));
+    }
+
     @Test void settingsAreNormalizedAndPersisted() throws Exception {
         var file = temp.resolve("settings.json");
         var settings = new SettingsStore.Settings(); settings.discoveryIntervalMs = 250; settings.theme = "malicious"; settings.networkInterface = "missing"; settings.autoConnect = false; settings.soundNotifications = false;
@@ -160,6 +169,18 @@ class CoreServicesTest {
             var textPreview = client.send(java.net.http.HttpRequest.newBuilder(java.net.URI.create(url + "?preview=1")).GET().build(), java.net.http.HttpResponse.BodyHandlers.ofByteArray());
             assertEquals(200, textPreview.statusCode()); assertEquals("text/plain", textPreview.headers().firstValue("Content-Type").orElse(""));
             assertTrue(textPreview.headers().firstValue("Content-Disposition").orElse("").startsWith("inline;"));
+
+            String imageId = UUID.randomUUID().toString(); Path imagePath = root.resolve("files").resolve(imageId); byte[] imageBytes = new byte[]{(byte) 0x89, 'P', 'N', 'G'};
+            java.nio.file.Files.write(imagePath, imageBytes); JsonObject previewImageMeta = new JsonObject(); previewImageMeta.addProperty("id", imageId); previewImageMeta.addProperty("type", "file");
+            previewImageMeta.addProperty("name", "preview.png"); previewImageMeta.addProperty("mime", "image/png"); previewImageMeta.addProperty("size", imageBytes.length); previewImageMeta.addProperty("diskName", imageId);
+            previewImageMeta.addProperty("channel", "general"); previewImageMeta.addProperty("time", System.currentTimeMillis()); store.addMessage(previewImageMeta);
+            String imageUrl = url.substring(0, url.lastIndexOf('/') + 1) + imageId;
+            var imagePreview = client.send(java.net.http.HttpRequest.newBuilder(java.net.URI.create(imageUrl + "?preview=1")).GET().build(), java.net.http.HttpResponse.BodyHandlers.ofByteArray());
+            assertEquals(200, imagePreview.statusCode()); assertEquals("image/png", imagePreview.headers().firstValue("Content-Type").orElse(""));
+            assertTrue(imagePreview.headers().firstValue("Content-Disposition").orElse("").startsWith("inline;")); assertArrayEquals(imageBytes, imagePreview.body());
+            var imageDownload = client.send(java.net.http.HttpRequest.newBuilder(java.net.URI.create(imageUrl)).GET().build(), java.net.http.HttpResponse.BodyHandlers.ofByteArray());
+            assertEquals(200, imageDownload.statusCode()); assertEquals("application/octet-stream", imageDownload.headers().firstValue("Content-Type").orElse(""));
+            assertTrue(imageDownload.headers().firstValue("Content-Disposition").orElse("").startsWith("attachment;")); assertArrayEquals(imageBytes, imageDownload.body());
 
             String audioId = UUID.randomUUID().toString(); Path audioPath = root.resolve("files").resolve(audioId); byte[] audioBytes = "abcdefghij".getBytes(StandardCharsets.UTF_8);
             java.nio.file.Files.write(audioPath, audioBytes); JsonObject audio = new JsonObject(); audio.addProperty("id", audioId); audio.addProperty("type", "file");
