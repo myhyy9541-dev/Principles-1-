@@ -46,12 +46,35 @@ class CoreServicesTest {
         assertEquals(List.of(ethernet), LanDiscovery.discoveryTargets(settings, List.of(wifi, ethernet)));
     }
 
+    @Test void officePreviewRendersDocxXlsxAndPptxAsEscapedLocalHtml() throws Exception {
+        Path docx = temp.resolve("sample.docx");
+        try (var document = new org.apache.poi.xwpf.usermodel.XWPFDocument(); var output = java.nio.file.Files.newOutputStream(docx)) {
+            document.createParagraph().createRun().setText("Office <preview>"); document.write(output);
+        }
+        String word = OfficePreviewService.render(docx, "sample.docx");
+        assertTrue(word.contains("Office &lt;preview&gt;")); assertFalse(word.contains("Office <preview>"));
+
+        Path xlsx = temp.resolve("sample.xlsx");
+        try (var workbook = new org.apache.poi.xssf.usermodel.XSSFWorkbook(); var output = java.nio.file.Files.newOutputStream(xlsx)) {
+            workbook.createSheet("بيانات").createRow(0).createCell(0).setCellValue("قيمة"); workbook.write(output);
+        }
+        assertTrue(OfficePreviewService.render(xlsx, "sample.xlsx").contains("قيمة"));
+
+        Path pptx = temp.resolve("sample.pptx");
+        try (var deck = new org.apache.poi.xslf.usermodel.XMLSlideShow(); var output = java.nio.file.Files.newOutputStream(pptx)) {
+            deck.createSlide().createTextBox().setText("عنوان الشريحة"); deck.write(output);
+        }
+        String slides = OfficePreviewService.render(pptx, "sample.pptx");
+        assertTrue(slides.contains("الشريحة")); assertTrue(slides.contains("عنوان الشريحة"));
+        assertFalse(OfficePreviewService.supports("macro.xlsm"));
+    }
+
     @Test void settingsAreNormalizedAndPersisted() throws Exception {
         var file = temp.resolve("settings.json");
-        var settings = new SettingsStore.Settings(); settings.discoveryIntervalMs = 250; settings.theme = "malicious"; settings.networkInterface = "missing"; settings.autoConnect = false; settings.soundNotifications = false;
+        var settings = new SettingsStore.Settings(); settings.discoveryIntervalMs = 250; settings.theme = "malicious"; settings.networkInterface = "missing"; settings.autoConnect = false; settings.soundNotifications = false; settings.sharePrinters = true; settings.sharedPrinterIds = List.of("p-0123456789abcdef01234567", "bad-id", "p-0123456789abcdef01234567");
         var saved = SettingsStore.save(file, settings, List.of());
         assertEquals(SettingsStore.DEFAULT_DISCOVERY_INTERVAL, saved.discoveryIntervalMs);
-        assertEquals("light", saved.theme); assertEquals("auto", saved.networkInterface); assertFalse(saved.autoConnect); assertFalse(saved.soundNotifications);
+        assertEquals("light", saved.theme); assertEquals("auto", saved.networkInterface); assertFalse(saved.autoConnect); assertFalse(saved.soundNotifications); assertTrue(saved.sharePrinters); assertEquals(List.of("p-0123456789abcdef01234567"),saved.sharedPrinterIds);
         var loaded = SettingsStore.load(file, List.of()); assertEquals(saved.discoveryIntervalMs, loaded.discoveryIntervalMs);
     }
 
@@ -68,6 +91,17 @@ class CoreServicesTest {
         assertEquals(Path.of("relative-folder/../downloads").toAbsolutePath().normalize().toString(), saved.defaultSaveDirectory);
         updated.defaultSaveDirectory = "  ";
         assertEquals("", SettingsStore.normalize(updated, List.of()).defaultSaveDirectory);
+    }
+
+    @Test void printerPermissionIsPersistentScopedAndRevocable() throws Exception {
+        Path file=temp.resolve("printer-permissions.json");
+        String sender="client_sender_print_0001", other="client_other_print_0002", printer="p-0123456789abcdef01234567", otherPrinter="p-fedcba9876543210fedcba98";
+        PrintPermissionStore permissions=new PrintPermissionStore(file);
+        assertFalse(permissions.allowed(sender,printer));
+        permissions.grant(sender,"مرسل",printer,"طابعة USB");
+        assertTrue(permissions.allowed(sender,printer)); assertFalse(permissions.allowed(other,printer)); assertFalse(permissions.allowed(sender,otherPrinter));
+        PrintPermissionStore reopened=new PrintPermissionStore(file); assertTrue(reopened.allowed(sender,printer));
+        reopened.revoke(sender,printer); assertFalse(new PrintPermissionStore(file).allowed(sender,printer));
     }
 
     @Test void privateHistoryAndReadReceiptsAreScopedToRecipients() throws Exception {
@@ -205,6 +239,22 @@ class CoreServicesTest {
             image.addProperty("channel", "general"); image.addProperty("time", System.currentTimeMillis()); store.addMessage(image);
             var preview = client.send(java.net.http.HttpRequest.newBuilder(java.net.URI.create(url.substring(0, url.lastIndexOf('/') + 1) + largeImageId + "?preview=1")).GET().build(), java.net.http.HttpResponse.BodyHandlers.ofByteArray());
             assertEquals(413, preview.statusCode());
+        }
+    }
+
+    @Test void fileServerServesOfficePreviewAndEnforcesItsSizeLimit() throws Exception {
+        Path root=temp.resolve("office-preview-room");
+        try(RoomStore store=new RoomStore(root);FileServer server=new FileServer(store,0)){
+            Path docx=temp.resolve("preview.docx");
+            try(var document=new org.apache.poi.xwpf.usermodel.XWPFDocument();var output=java.nio.file.Files.newOutputStream(docx)){
+                document.createParagraph().createRun().setText("مستند معاينة Office");document.write(output);
+            }
+            byte[] bytes=java.nio.file.Files.readAllBytes(docx);String owner="client_office_sender_00001",transfer=UUID.randomUUID().toString();
+            JsonObject metadata=new JsonObject();metadata.addProperty("transferId",transfer);metadata.addProperty("name","preview.docx");metadata.addProperty("mime","application/vnd.openxmlformats-officedocument.wordprocessingml.document");metadata.addProperty("size",bytes.length);metadata.addProperty("channel","general");
+            store.beginUpload(metadata,"office-test",owner);store.appendChunk(transfer,0,Base64.getEncoder().encodeToString(bytes),owner);JsonObject saved=store.completeUpload(transfer,owner);server.start();
+            String url="http://127.0.0.1:"+server.port()+"/api/files/"+saved.get("id").getAsString()+"?preview=1";
+            var response=java.net.http.HttpClient.newHttpClient().send(java.net.http.HttpRequest.newBuilder(java.net.URI.create(url)).GET().build(),java.net.http.HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+            assertEquals(200,response.statusCode());assertTrue(response.headers().firstValue("Content-Type").orElse("").startsWith("text/html"));assertTrue(response.body().contains("مستند معاينة Office"));assertTrue(response.headers().firstValue("Content-Security-Policy").orElse("").contains("default-src 'none'"));
         }
     }
 }

@@ -19,20 +19,23 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 
 public final class LanRoomServer implements AutoCloseable {
     private static final Gson GSON = new Gson();
     private static final int MAX_MESSAGE_CHARS = 5000;
     private final RoomStore store;
     private final Consumer<String> notice;
+    private final Supplier<JsonArray> sharedPrinters;
     private final int port;
     private final Map<UUID, JsonObject> peers = new ConcurrentHashMap<>();
     private final Map<String, Deque<Long>> rates = new ConcurrentHashMap<>();
     private volatile SocketIOServer server;
     private volatile JsonObject activeCall;
 
-    public LanRoomServer(RoomStore store, Consumer<String> notice) { this(store, notice, LanDiscovery.SOCKET_PORT); }
-    public LanRoomServer(RoomStore store, Consumer<String> notice, int port) { this.store = store; this.notice = notice; this.port = port; }
+    public LanRoomServer(RoomStore store, Consumer<String> notice) { this(store, notice, LanDiscovery.SOCKET_PORT, JsonArray::new); }
+    public LanRoomServer(RoomStore store, Consumer<String> notice, int port) { this(store, notice, port, JsonArray::new); }
+    public LanRoomServer(RoomStore store, Consumer<String> notice, int port, Supplier<JsonArray> sharedPrinters) { this.store = store; this.notice = notice; this.port = port; this.sharedPrinters = sharedPrinters; }
 
     public synchronized void start() {
         if (server != null) return;
@@ -54,6 +57,10 @@ public final class LanRoomServer implements AutoCloseable {
         next.addEventListener("upload-complete", Map.class, (client, data, ack) -> uploadComplete(client, json(data), ack));
         next.addEventListener("upload-cancel", Map.class, (client, data, ack) -> uploadCancel(client, json(data)));
         next.addEventListener("signal", Map.class, (client, data, ack) -> signal(client, json(data)));
+        next.addEventListener("print-list-request", Map.class, (client, data, ack) -> printListRequest(client, json(data)));
+        next.addEventListener("print-list", Map.class, (client, data, ack) -> printListResponse(client, json(data)));
+        next.addEventListener("print-offer", Map.class, (client, data, ack) -> printOffer(client, json(data)));
+        next.addEventListener("print-result", Map.class, (client, data, ack) -> printResult(client, json(data)));
         next.start(); server = next;
     }
 
@@ -333,6 +340,82 @@ public final class LanRoomServer implements AutoCloseable {
         }
         broadcastContacts(); broadcastMembers();
         JsonObject system = new JsonObject(); system.addProperty("text", text(user, "name", "مستخدم") + " غادر الغرفة"); system.addProperty("time", System.currentTimeMillis()); broadcast("system-message", system);
+    }
+
+    private void printListRequest(SocketIOClient client, JsonObject raw) {
+        JsonObject requester=peers.get(client.getSessionId()); if(requester==null)return;
+        if(!withinRate(client,"print-list",10)){send(client,"print-printers",emptyPrintList(text(raw,"requestId","")));return;}
+        if(port==LanDiscovery.PEER_PORT && sharedPrinters.get().isEmpty()){send(client,"print-printers",emptyPrintList(text(raw,"requestId","")));return;}
+        SocketIOClient target=socketForClient(text(raw,"targetClientId",""));
+        if(target==null){send(client,"print-printers",emptyPrintList(text(raw,"requestId","")));return;}
+        JsonObject query=new JsonObject(); query.addProperty("requesterClientId",text(requester,"clientId","")); query.addProperty("requesterName",text(requester,"name","مستخدم")); query.addProperty("requestId",text(raw,"requestId",""));
+        send(target,"print-list-request",query);
+    }
+
+    private void printListResponse(SocketIOClient client,JsonObject raw){
+        JsonObject owner=peers.get(client.getSessionId()); if(owner==null || !withinRate(client,"print-list-response",10))return;
+        String requesterId=text(raw,"requesterClientId",""); SocketIOClient requester=socketForClient(requesterId); if(requester==null)return;
+        JsonObject response=new JsonObject(); response.addProperty("ownerClientId",text(owner,"clientId","")); response.addProperty("ownerName",text(owner,"name","مستخدم"));
+        Set<String> installed=new HashSet<>(); if(port==LanDiscovery.PEER_PORT) for(JsonElement printer:sharedPrinters.get()) installed.add(text(printer.getAsJsonObject(),"id",""));
+        JsonArray shared=new JsonArray(); JsonElement requested=raw.get("printers");
+        if(requested!=null && requested.isJsonArray()) for(JsonElement printer:requested.getAsJsonArray()) if(printer.isJsonObject()){
+            if(shared.size()>=16)break;
+            JsonObject value=printer.getAsJsonObject(); String id=text(value,"id","");
+            if(!id.matches("p-[a-f0-9]{24}") || (port==LanDiscovery.PEER_PORT && !installed.contains(id)) || shared.size()>=16)continue;
+            JsonObject safe=new JsonObject();safe.addProperty("id",id);safe.addProperty("name",cleanName(text(value,"name","طابعة")).substring(0,Math.min(80,cleanName(text(value,"name","طابعة")).length())));safe.addProperty("default",value.has("default")&&value.get("default").getAsBoolean());
+            JsonArray formats=new JsonArray();if(value.has("formats")&&value.get("formats").isJsonArray())for(JsonElement format:value.getAsJsonArray("formats"))if(formats.size()<8)formats.add(format.getAsString());safe.add("formats",formats);shared.add(safe);
+        }
+        response.addProperty("requestId",text(raw,"requestId","")); response.add("printers",shared); send(requester,"print-printers",response);
+    }
+
+    private static JsonObject emptyPrintList(String requestId){JsonObject result=new JsonObject();result.addProperty("requestId",requestId);result.add("printers",new JsonArray());return result;}
+
+    private void printOffer(SocketIOClient client, JsonObject raw) {
+        JsonObject sender=peers.get(client.getSessionId()); if(sender==null || !withinRate(client,"print-offer",10))return;
+        String senderId=text(sender,"clientId",""), fileId=text(raw,"fileId",""), targetId=text(raw,"targetClientId",""), printerId=text(raw,"printerId","");
+        if(!fileId.matches("(?i)[0-9a-f-]{36}") || !printerId.matches("p-[a-f0-9]{24}") || !targetId.matches("[A-Za-z0-9_-]{16,80}"))return;
+        if(port==LanDiscovery.PEER_PORT && sharedPrinters.get().asList().stream().noneMatch(item->printerId.equals(text(item.getAsJsonObject(),"id","")))){send(client,"notice","الطابعة المحددة لا تسمح بمشاركة واصل حالياً.");return;}
+        JsonObject file=store.message(fileId);
+        if(file==null || !"file".equals(text(file,"type","")) || !senderId.equals(text(file,"senderClientId","")) || store.filePath(fileId)==null){send(client,"notice","لا يمكن طباعة هذا الملف؛ يجب أن تكون أنت من شاركه في هذه المحادثة.");return;}
+        if(!file.has("size") || file.get("size").getAsLong()>32L*1024*1024){send(client,"notice","حجم ملف الطباعة يتجاوز الحد 32 ميغابايت.");return;}
+        if(!withinFileRecipient(file,senderId,targetId)){send(client,"notice","هذا الملف غير مشارك مع المستخدم المختار.");return;}
+        SocketIOClient target=socketForClient(targetId); if(target==null){send(client,"notice","المستخدم المحدد غير متصل.");return;}
+        int filePort=LanDiscovery.FILE_PORT;
+        String fileHost=port==LanDiscovery.PEER_PORT?"127.0.0.1":localAddressFor(target.getRemoteAddress());
+        if(fileHost.isBlank()){send(client,"notice","تعذر تحديد بطاقة الشبكة المناسبة لإرسال ملف الطباعة.");return;}
+        JsonObject offer=new JsonObject(); offer.addProperty("requestId",UUID.randomUUID().toString()); offer.addProperty("senderClientId",senderId); offer.addProperty("senderName",text(sender,"name","مستخدم"));
+        offer.addProperty("targetClientId",targetId); offer.addProperty("printerId",printerId); offer.addProperty("fileId",fileId); offer.addProperty("fileName",text(file,"name","ملف"));
+        offer.addProperty("mime",text(file,"mime","application/octet-stream")); offer.addProperty("size",file.has("size")?file.get("size").getAsLong():0); offer.addProperty("fileHost",fileHost); offer.addProperty("filePort",filePort);
+        send(target,"print-offer",offer);
+    }
+
+    private static String localAddressFor(java.net.SocketAddress remoteAddress){
+        if(!(remoteAddress instanceof java.net.InetSocketAddress socket) || socket.getAddress()==null)return "";
+        byte[] remoteBytes=socket.getAddress().getAddress(); if(remoteBytes.length!=4)return "";
+        long remote=ipv4(remoteBytes);
+        for(SettingsStore.Adapter adapter:SettingsStore.adapters()){
+            long local=ipv4(adapter.address),mask=ipv4(adapter.netmask);
+            if(local>=0 && mask>=0 && (local&mask)==(remote&mask))return adapter.address;
+        }
+        return "";
+    }
+    private static long ipv4(byte[] bytes){long value=0;for(byte part:bytes)value=(value<<8)|(part&255L);return value;}
+    private static long ipv4(String text){try{String[] parts=text.split("\\.");if(parts.length!=4)return -1;long value=0;for(String part:parts){int octet=Integer.parseInt(part);if(octet<0||octet>255)return -1;value=(value<<8)|octet;}return value;}catch(RuntimeException ex){return -1;}}
+
+    private boolean withinFileRecipient(JsonObject file,String senderId,String recipientId){
+        if(senderId.equals(recipientId))return true;
+        String channel=text(file,"channel","general"); if("general".equals(channel)||"broadcast".equals(channel))return true;
+        if(text(file,"toId","").equals(recipientId))return true;
+        if(file.has("groupId") && store.isGroupMember(text(file,"groupId",""),recipientId))return true;
+        if(file.has("recipientIds") && file.get("recipientIds").isJsonArray()) for(JsonElement id:file.getAsJsonArray("recipientIds")) if(recipientId.equals(id.getAsString()))return true;
+        return false;
+    }
+
+    private void printResult(SocketIOClient client,JsonObject raw){
+        JsonObject sender=peers.get(client.getSessionId()); if(sender==null || !withinRate(client,"print-result",20))return;
+        SocketIOClient target=socketForClient(text(raw,"targetClientId","")); if(target==null)return;
+        JsonObject result=new JsonObject(); result.addProperty("senderClientId",text(sender,"clientId","")); result.addProperty("senderName",text(sender,"name","مستخدم"));
+        result.addProperty("requestId",text(raw,"requestId","")); result.addProperty("ok",raw.has("ok")&&raw.get("ok").getAsBoolean()); result.addProperty("status",text(raw,"status","")); send(target,"print-result",result);
     }
 
     private void publishMessage(JsonObject message) {

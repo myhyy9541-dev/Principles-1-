@@ -43,20 +43,36 @@ public final class FileServer implements AutoCloseable {
         Path file = store.filePath(id); JsonObject item = store.message(id);
         if (file == null || item == null) { reply(exchange, 404, "الملف غير موجود."); return; }
         String mime = text(item, "mime", "application/octet-stream").toLowerCase(Locale.ROOT).split(";", 2)[0].strip();
+        String name = text(item, "name", "shared-file").replaceAll("[\\r\\n\\\"]", "_");
         boolean preview = exchange.getRequestURI().getRawQuery() != null && exchange.getRequestURI().getRawQuery().contains("preview=1");
         boolean imagePreview = mime.matches("image/(png|jpeg|gif|webp|avif)");
         boolean streamingPreview = mime.matches("audio/(mpeg|ogg|wav|webm|mp4|aac|flac)|video/(mp4|webm|ogg|mpeg|quicktime)");
         boolean documentPreview = mime.equals("application/pdf") || mime.equals("text/plain");
-        if (preview && !(imagePreview || streamingPreview || documentPreview)) { reply(exchange, 415, "معاينة هذا النوع غير مدعومة."); return; }
+        boolean officePreview = OfficePreviewService.supports(name);
+        if (preview && !(imagePreview || streamingPreview || documentPreview || officePreview)) { reply(exchange, 415, "معاينة هذا النوع غير مدعومة."); return; }
         long size = Files.size(file);
         if (preview && imagePreview && size > MAX_PREVIEW_BYTES) { reply(exchange, 413, "حجم الصورة كبير للمعاينة؛ نزّلها لعرضها."); return; }
         if (preview && documentPreview && size > MAX_DOCUMENT_PREVIEW_BYTES) { reply(exchange, 413, "حجم المستند كبير للمعاينة؛ نزّله لعرضه."); return; }
-        String name = text(item, "name", "shared-file").replaceAll("[\\r\\n\\\"]", "_");
+        if (preview && officePreview && size > OfficePreviewService.MAX_INPUT_BYTES) { reply(exchange, 413, "حجم مستند Office يتجاوز حد المعاينة 32 ميغابايت."); return; }
+        byte[] renderedOffice = null;
+        if (preview && officePreview) {
+            try { renderedOffice = OfficePreviewService.render(file, name).getBytes(StandardCharsets.UTF_8); }
+            catch (IOException ex) { reply(exchange, 422, ex.getMessage() == null ? "تعذرت معاينة مستند Office." : ex.getMessage()); return; }
+        }
         var headers = exchange.getResponseHeaders();
         headers.set("X-Content-Type-Options", "nosniff"); headers.set("Accept-Ranges", "bytes"); headers.set("Connection", "close");
-        headers.set("Cache-Control", preview ? "private, max-age=300" : "no-store");
-        headers.set("Content-Type", preview ? mime : "application/octet-stream");
+        headers.set("Access-Control-Allow-Origin", "http://127.0.0.1:43819");
+        headers.set("Cache-Control", "no-store");
+        headers.set("Content-Type", renderedOffice != null ? "text/html; charset=utf-8" : preview ? mime : "application/octet-stream");
+        if (renderedOffice != null) headers.set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors http://127.0.0.1:43819");
         headers.set("Content-Disposition", (preview ? "inline" : "attachment") + "; filename*=UTF-8''" + java.net.URLEncoder.encode(name, StandardCharsets.UTF_8).replace("+", "%20"));
+        if (renderedOffice != null) {
+            headers.set("Content-Length", Integer.toString(renderedOffice.length));
+            if ("HEAD".equalsIgnoreCase(exchange.getRequestMethod())) { exchange.sendResponseHeaders(200, -1); exchange.close(); return; }
+            exchange.sendResponseHeaders(200, renderedOffice.length);
+            try (var output = exchange.getResponseBody()) { output.write(renderedOffice); }
+            return;
+        }
         long start = 0, end = Math.max(0, size - 1); int status = 200;
         String range = exchange.getRequestHeaders().getFirst("Range");
         if (range != null && (!preview || streamingPreview)) {

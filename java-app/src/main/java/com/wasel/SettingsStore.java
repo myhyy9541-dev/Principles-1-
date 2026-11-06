@@ -11,10 +11,10 @@ import java.nio.file.Files;
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
-import java.nio.file.InvalidPathException;
 import java.util.ArrayList;
 import java.util.Enumeration;
 import java.util.List;
+import java.util.LinkedHashSet;
 
 public final class SettingsStore {
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -44,6 +44,8 @@ public final class SettingsStore {
         public String theme = "light";
         public String defaultSaveDirectory = defaultSaveDirectory();
         public boolean soundNotifications = true;
+        public boolean sharePrinters = false;
+        public List<String> sharedPrinterIds = new ArrayList<>();
     }
 
     private static String defaultSaveDirectory() {
@@ -112,6 +114,10 @@ public final class SettingsStore {
         clean.theme = List.of("light", "dark", "system").contains(value.theme) ? value.theme : "light";
         clean.defaultSaveDirectory = normalizeSaveDirectory(value.defaultSaveDirectory);
         clean.soundNotifications = value.soundNotifications;
+        clean.sharePrinters = value.sharePrinters;
+        LinkedHashSet<String> printerIds = new LinkedHashSet<>();
+        if (value.sharedPrinterIds != null) for (String id : value.sharedPrinterIds) if (id != null && id.matches("p-[a-f0-9]{24}")) printerIds.add(id);
+        clean.sharedPrinterIds = new ArrayList<>(printerIds);
         return clean;
     }
 

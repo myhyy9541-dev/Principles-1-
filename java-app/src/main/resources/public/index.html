@@ -30,8 +30,11 @@
     <label class="check-option"><input id="soundNotificationsCheck" type="checkbox" checked> تنبيهات صوتية للانضمام والرسائل والمكالمات</label>
     <label class="check-option"><input id="autoConnectCheck" type="checkbox"> الاتصال تلقائياً بالمضيف المكتشف</label>
     <label class="check-option"><input id="openAtLoginCheck" type="checkbox"> تشغيل واصل عند تسجيل الدخول إلى Windows</label>
+    <label class="check-option"><input id="sharePrintersCheck" type="checkbox"> مشاركة الطابعات عبر واصل (متوقفة افتراضياً)</label>
+    <div class="printer-settings"><b>الطابعات التي تسمح بمشاركتها</b><div id="printerList" class="printer-list">جارٍ اكتشاف الطابعات المثبتة في Windows…</div><small>تظهر فقط الطابعات المثبتة محلياً. تتطلب كل طابعة موافقة أولى لكل مستخدم، ويمكن إلغاء الإذن في أي وقت.</small></div>
+    <div class="printer-settings"><b>أذونات الطباعة المحفوظة على هذا الجهاز</b><div id="printerPermissionsList" class="printer-list">لا توجد أذونات محفوظة.</div></div>
   </div>
   <div class="manual-connect"><b>اتصال يدوي عند الحاجة</b><div><input id="manualHostInput" inputmode="decimal" placeholder="عنوان IP للمضيف"><button type="button" id="connectHostBtn" class="call-control">اتصال</button></div><p id="detectedRoomText">سيظهر المضيف المكتشف هنا عند تعطيل الاتصال التلقائي.</p><button type="button" id="connectDetectedBtn" class="call-control" disabled>اتصال بالمضيف المكتشف</button></div>
   <div class="settings-actions"><span id="settingsVersion"></span><button type="button" id="saveSettingsBtn" class="icon-btn primary">حفظ الإعدادات</button></div>
 </form></dialog>
-<div id="toast" class="toast hidden"></div><script src="socket.io.js"></script><script src="wasel-bridge.js"></script><script src="renderer.js"></script></body></html>
+<div id="toast" class="toast hidden"></div><script src="socket.io.js"></script><script src="wasel-bridge.js"></script><script src="renderer.js"></script><script src="printer-ui.js"></script></body></html>

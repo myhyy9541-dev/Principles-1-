@@ -10,8 +10,9 @@ let pendingFile = null, localStream = null, callMode = null, currentMembers = []
 let connectionMode = localStorage.getItem('wasel-connection-mode') || 'direct', p2pActive = false, localPeerSocket = null, selfFileAddress = '127.0.0.1';
 const peerSockets = new Map(), discoveredPeers = new Map(), signalSockets = new Map();
 if (!['direct', 'host'].includes(connectionMode)) connectionMode = 'direct';
-let appSettings = { networkInterface: 'auto', discoveryIntervalMs: 1800, autoConnect: true, openAtLogin: false, theme: 'light', defaultSaveDirectory: '', soundNotifications: true };
+let appSettings = { networkInterface: 'auto', discoveryIntervalMs: 1800, autoConnect: true, openAtLogin: false, theme: 'light', defaultSaveDirectory: '', soundNotifications: true, sharePrinters: false, sharedPrinterIds: [] };
 let discoveredRoom = null, networkSettingsView = null;
+let printerView = null;
 let contacts = [], groups = [], currentChat = 'general', allMessages = (() => { try { const saved = JSON.parse(localStorage.getItem('wasel-p2p-history') || '[]'); return Array.isArray(saved) ? saved.slice(-500) : []; } catch (_) { return []; } })(), searchTerm = '';
 const messageById = new Map(allMessages.filter(message => message?.id).map(message => [message.id, message]));
 const messageSockets = new Map(), historyCursors = new Map(), requestedChatHistory = new WeakMap();
@@ -102,7 +103,8 @@ function addMessage(message, target = $('messages')) {
       ? `<img class="image-preview" src="${url}?preview=1" alt="${escapeHtml(message.name)}" loading="lazy">` : '';
     const player = mime.startsWith('audio/') ? `<audio class="inline-audio" controls preload="none" src="${url}?preview=1"></audio>`
       : mime.startsWith('video/') ? `<video class="inline-video" controls preload="metadata" src="${url}?preview=1"></video>` : '';
-    content = `<div class="file-card"><a class="file-download" download="${escapeHtml(message.name)}" href="${url}"><span class="file-icon">▤</span><span class="file-label">${escapeHtml(message.name)}<small>ملف مشترك · ${escapeHtml(message.user)} · ${formatSize(message.size)}</small></span><span>تنزيل</span></a><button type="button" class="preview-button" data-preview-id="${escapeHtml(message.id)}">معاينة</button></div>${preview}${player}`;
+    const printAction = mine ? `<button type="button" class="preview-button print-action" data-print-id="${escapeHtml(message.id)}">طباعة عبر مستخدم</button>` : '';
+    content = `<div class="file-card"><a class="file-download" download="${escapeHtml(message.name)}" href="${url}"><span class="file-icon">▤</span><span class="file-label">${escapeHtml(message.name)}<small>ملف مشترك · ${escapeHtml(message.user)} · ${formatSize(message.size)}</small></span><span>تنزيل</span></a><button type="button" class="preview-button" data-preview-id="${escapeHtml(message.id)}">معاينة</button>${printAction}</div>${preview}${player}`;
   }
   const status = mine && message.channel !== 'general' ? `<span class="delivery-state">${(message.readBy || []).length ? '✓✓ تمت القراءة' : (message.deliveredTo || []).length ? '✓ تم التسليم' : '◷ قيد التسليم'}</span>` : '';
   row.innerHTML = `<div class="msg-avatar">${initial}</div><div class="bubble-wrap"><div class="msg-meta"><b>${escapeHtml(message.user || 'النظام')}</b><span class="msg-time">${formatTime(message.time)}</span>${status}</div><div class="bubble">${content}</div></div>`;
@@ -113,7 +115,9 @@ function showFilePreview(message) {
   const dialog = $('fileViewer'), body = $('fileViewerBody'), mime = String(message.mime || '').toLowerCase();
   const url = `${fileUrl(message.id, message)}?preview=1`;
   $('fileViewerTitle').textContent = message.name || 'معاينة الملف'; body.replaceChildren();
-  if (/^image\/(png|jpeg|gif|webp|avif)$/.test(mime)) {
+  if (/\.(docx?|xlsx?|pptx?)$/i.test(message.name || '')) {
+    const frame = document.createElement('iframe'); frame.className = 'viewer-frame'; frame.title = `معاينة ${message.name || 'مستند Office'}`; frame.sandbox = 'allow-same-origin'; frame.src = url; body.append(frame);
+  } else if (/^image\/(png|jpeg|gif|webp|avif)$/.test(mime)) {
     if (Number(message.size || 0) > IMAGE_PREVIEW_MAX_BYTES) body.textContent = 'الصورة أكبر من الحد المسموح للمعاينة؛ نزّلها لعرضها.';
     else { const image = document.createElement('img'); image.className = 'viewer-image'; image.src = url; image.alt = message.name || ''; image.onerror = () => { body.textContent = 'تعذرت معاينة الصورة؛ نزّل الملف للتحقق منه.'; }; body.append(image); }
   } else if (/^(audio|video)\//.test(mime)) {
@@ -126,6 +130,8 @@ function showFilePreview(message) {
   dialog.showModal();
 }
 $('messages').addEventListener('click', event => {
+  const printButton = event.target.closest('[data-print-id]');
+  if (printButton) { const message = messageById.get(printButton.dataset.printId); if (message?.type === 'file') requestRemotePrint(message).catch(error => toast(error.message)); return; }
   const thumbnail = event.target.closest('.image-preview');
   if (thumbnail) {
     const message = messageById.get(thumbnail.closest('.message')?.dataset.messageId);
@@ -433,6 +439,10 @@ function handleEvent(event, data, source = socket) {
       break;
     }
     case 'notice': toast(data); break;
+    case 'print-list-request': publishPrinterList(data, source || socket); break;
+    case 'print-printers': pendingPrintListRequests.get(data?.requestId)?.(data.printers || []); break;
+    case 'print-offer': receivePrintOffer(data, source || socket); break;
+    case 'print-result': toast(data?.ok ? `أُرسلت الطباعة: ${data.status || 'إلى Windows'}` : `تعذرت الطباعة: ${data?.status || 'رفض الطلب'}`); break;
     case 'signal': receiveSignal(data, source).catch(error => toast(`تعذر إعداد الاتصال: ${error.message}`)); break;
   }
 }
@@ -445,7 +455,7 @@ function connect(address, port, filePort = 43822) {
   if (!window.io) { connecting = false; return toast('ملف الاتصال المحلي غير متوفر؛ أعد تثبيت التطبيق.'); }
   socket?.disconnect();
   socket = window.io(`http://${address}:${port}`, { transports: ['websocket', 'polling'], timeout: 5000, reconnection: true });
-  for (const event of ['connect', 'connect_error', 'disconnect', 'identity', 'history', 'history-chat-page', 'history-older', 'members', 'contacts', 'groups', 'system-message', 'chat-message', 'file-message', 'message-receipt', 'signal', 'notice']) {
+  for (const event of ['connect', 'connect_error', 'disconnect', 'identity', 'history', 'history-chat-page', 'history-older', 'members', 'contacts', 'groups', 'system-message', 'chat-message', 'file-message', 'message-receipt', 'signal', 'notice', 'print-list-request', 'print-printers', 'print-offer', 'print-result']) {
     socket.on(event, data => {
       if (event === 'connect') { socket.emit('join', { name: myName, clientId }); handleEvent(event, { id: socket.id }); requestSourceChatHistory(socket, currentChat); }
       else handleEvent(event, data);
@@ -467,7 +477,7 @@ function bindPeerSocket(peerSocket, peer = null, local = false) {
     if (local) handleEvent('connect_error', error, peerSocket);
     else refreshPeerContacts();
   });
-  for (const event of ['identity', 'history', 'history-chat-page', 'history-older', 'members', 'contacts', 'groups', 'system-message', 'chat-message', 'file-message', 'message-receipt', 'signal', 'notice']) {
+  for (const event of ['identity', 'history', 'history-chat-page', 'history-older', 'members', 'contacts', 'groups', 'system-message', 'chat-message', 'file-message', 'message-receipt', 'signal', 'notice', 'print-list-request', 'print-printers', 'print-offer', 'print-result']) {
     peerSocket.on(event, data => {
       if (local) { handleEvent(event, data, peerSocket); return; }
       if (event === 'members') {
@@ -478,7 +488,7 @@ function bindPeerSocket(peerSocket, peer = null, local = false) {
           if (connection?.socket === peerSocket) connection.remoteSessionId = ownMember.id;
         }
         refreshPeerMembers();
-      } else if (['history', 'history-chat-page', 'history-older', 'chat-message', 'file-message', 'message-receipt', 'signal', 'notice'].includes(event)) {
+      } else if (['history', 'history-chat-page', 'history-older', 'chat-message', 'file-message', 'message-receipt', 'signal', 'notice', 'print-list-request', 'print-printers', 'print-offer', 'print-result'].includes(event)) {
         handleEvent(event, data, peerSocket);
       }
     });
@@ -1045,6 +1055,9 @@ async function loadSettings(openDialog = false) {
     $('themeSelect').value = appSettings.theme || 'light';
     $('defaultSaveDirectory').value = appSettings.defaultSaveDirectory || '';
     $('soundNotificationsCheck').checked = appSettings.soundNotifications !== false;
+    $('sharePrintersCheck').checked = appSettings.sharePrinters === true;
+    try { printerView = await window.wasel.getPrinters(); renderPrinterSettings(printerView); }
+    catch (error) { $('printerList').textContent = `تعذر قراءة الطابعات المحلية: ${error.message}`; }
     const rememberedName = localStorage.getItem('wasel-name');
     $('displayNameInput').value = rememberedName || '';
     applyTheme(appSettings.theme || 'light');
@@ -1069,7 +1082,9 @@ $('saveSettingsBtn').onclick = async () => {
     openAtLogin: $('openAtLoginCheck').checked,
     theme: $('themeSelect').value,
     defaultSaveDirectory: $('defaultSaveDirectory').value.trim(),
-    soundNotifications: $('soundNotificationsCheck').checked
+    soundNotifications: $('soundNotificationsCheck').checked,
+    sharePrinters: $('sharePrintersCheck').checked,
+    sharedPrinterIds: [...document.querySelectorAll('[data-shared-printer]:checked')].map(input => input.value)
   };
   $('saveSettingsBtn').disabled = true;
   try {
@@ -1081,6 +1096,7 @@ $('saveSettingsBtn').onclick = async () => {
       startPeerMode();
     } else if (connected) socket.emit('update-profile', { name });
     renderNetworkSettings(view); applyTheme(appSettings.theme);
+    printerView = await window.wasel.getPrinters(); renderPrinterSettings(printerView);
     $('settingsDialog').close(); toast('تم حفظ إعدادات هذا الجهاز.');
     if (appSettings.autoConnect && !previousAutoConnect && discoveredRoom && !connected && !connecting) connect(discoveredRoom.address, discoveredRoom.port, discoveredRoom.filePort);
   } catch (error) { toast(`تعذر حفظ الإعدادات: ${error.message}`); }

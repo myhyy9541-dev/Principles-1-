@@ -23,6 +23,8 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 
@@ -30,8 +32,11 @@ public final class WaselRuntime implements AutoCloseable {
     private static final Gson GSON = new Gson();
     public static final int UI_PORT = 43819;
     private final Path dataRoot, settingsPath;
+    private final PrintPermissionStore printPermissions;
     private final ConcurrentLinkedQueue<JsonObject> events = new ConcurrentLinkedQueue<>();
     private final AtomicBoolean closed = new AtomicBoolean();
+    private final ExecutorService printExecutor = Executors.newFixedThreadPool(2, r -> { Thread t=new Thread(r,"wasel-printer-worker");t.setDaemon(true);return t; });
+    private final Semaphore printSlots = new Semaphore(2);
     private SettingsStore.Settings settings;
     private final RoomStore store;
     private final LanDiscovery discovery;
@@ -43,6 +48,7 @@ public final class WaselRuntime implements AutoCloseable {
 
     public WaselRuntime() throws IOException {
         dataRoot = resolveDataRoot(); settingsPath = dataRoot.resolve("settings.json"); Files.createDirectories(dataRoot);
+        printPermissions = new PrintPermissionStore(dataRoot.resolve("printer-permissions.json"));
         migrateLegacyRoom(dataRoot);
         settings = SettingsStore.load(settingsPath, SettingsStore.adapters());
         store = new RoomStore(dataRoot.resolve("wasel-room"));
@@ -52,6 +58,9 @@ public final class WaselRuntime implements AutoCloseable {
         uiServer.createContext("/api/lan-info", this::handleLanInfo);
         uiServer.createContext("/api/settings", this::handleSettings);
         uiServer.createContext("/api/choose-save-directory", this::handleChooseSaveDirectory);
+        uiServer.createContext("/api/printers", this::handlePrinters);
+        uiServer.createContext("/api/printer-permissions", this::handlePrinterPermissions);
+        uiServer.createContext("/api/print-local", this::handlePrintLocal);
         uiServer.createContext("/api/start-room", this::handleStartRoom);
         uiServer.createContext("/api/start-peer", this::handleStartPeer);
         uiServer.createContext("/api/stop-peer", this::handleStopPeer);
@@ -81,6 +90,52 @@ public final class WaselRuntime implements AutoCloseable {
             response.addProperty("path", result == null ? "" : result.toAbsolutePath().normalize().toString()); json(exchange,200,response);
         } catch (TimeoutException ex) { json(exchange,504,error("انتهت مهلة اختيار المجلد.")); }
         catch (Exception ex) { json(exchange,200,error("تعذر اختيار المجلد.")); }
+    }
+
+    private void handlePrinters(HttpExchange exchange) throws IOException {
+        if (!"GET".equalsIgnoreCase(exchange.getRequestMethod())) { reply(exchange,405,"الطلب غير مدعوم."); return; }
+        JsonObject result = new JsonObject(); result.add("printers", PrinterService.list()); result.add("permissions", printPermissions.list());
+        result.add("sharedPrinterIds", GSON.toJsonTree(settings.sharedPrinterIds)); result.addProperty("shareEnabled", settings.sharePrinters); json(exchange,200,result);
+    }
+
+    private void handlePrinterPermissions(HttpExchange exchange) throws IOException {
+        if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) { reply(exchange,405,"الطلب غير مدعوم."); return; }
+        try {
+            JsonObject request=JsonParser.parseString(new String(exchange.getRequestBody().readNBytes(16*1024),StandardCharsets.UTF_8)).getAsJsonObject();
+            String senderId=request.has("senderClientId")?request.get("senderClientId").getAsString():"";
+            String printerId=request.has("printerId")?request.get("printerId").getAsString():"";
+            String printerName=request.has("printerName")?request.get("printerName").getAsString():"";
+            String senderName=request.has("senderName")?request.get("senderName").getAsString():"";
+            if (request.has("revoke") && request.get("revoke").getAsBoolean()) printPermissions.revoke(senderId,printerId);
+            else {
+                if (!settings.sharePrinters || !settings.sharedPrinterIds.contains(printerId)) throw new IllegalArgumentException("فعّل مشاركة هذه الطابعة أولاً في إعدادات واصل.");
+                boolean exists=PrinterService.list().asList().stream().anyMatch(item->printerId.equals(item.getAsJsonObject().get("id").getAsString()));
+                if (!exists) throw new IllegalArgumentException("الطابعة المختارة لم تعد متاحة.");
+                printPermissions.grant(senderId,senderName,printerId,printerName);
+            }
+            JsonObject result=new JsonObject(); result.addProperty("ok",true); result.add("permissions",printPermissions.list()); json(exchange,200,result);
+        } catch (Exception ex) { json(exchange,400,error(ex.getMessage()==null?"تعذرت إدارة إذن الطباعة.":ex.getMessage())); }
+    }
+
+    private void handlePrintLocal(HttpExchange exchange) throws IOException {
+        if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) { reply(exchange,405,"الطلب غير مدعوم."); return; }
+        String senderId=exchange.getRequestHeaders().getFirst("X-Wasel-Sender"), printerId=exchange.getRequestHeaders().getFirst("X-Wasel-Printer");
+        String encodedName=exchange.getRequestHeaders().getFirst("X-Wasel-Filename");
+        if (senderId==null || printerId==null || encodedName==null || !settings.sharePrinters || !settings.sharedPrinterIds.contains(printerId)
+                || !printPermissions.allowed(senderId,printerId)) { json(exchange,403,error("لا يوجد إذن طباعة نشط لهذا المرسل والطابعة.")); return; }
+        byte[] data=exchange.getRequestBody().readNBytes(32*1024*1024+1);
+        if (data.length<1 || data.length>32*1024*1024) { json(exchange,413,error("حجم مهمة الطباعة يتجاوز الحد 32 ميغابايت.")); return; }
+        String name;
+        try { name=java.net.URLDecoder.decode(encodedName,StandardCharsets.UTF_8).replaceAll("[\\r\\n\\u0000/\\\\]","_"); }
+        catch (Exception ex) { json(exchange,400,error("اسم ملف الطباعة غير صالح.")); return; }
+        if(!printSlots.tryAcquire()){json(exchange,429,error("توجد مهمتا طباعة قيد التنفيذ؛ حاول مجدداً بعد اكتمالهما."));return;}
+        Path temp=null;
+        try {
+            Path printDir=dataRoot.resolve("print-queue"); Files.createDirectories(printDir); Path jobFile=Files.createTempFile(printDir,"job-",".tmp"); temp=jobFile;
+            Files.write(jobFile,data); String status=CompletableFuture.supplyAsync(()->{try{return PrinterService.submit(jobFile,name,printerId);}catch(Exception ex){throw new java.util.concurrent.CompletionException(ex);}},printExecutor).get(); JsonObject result=new JsonObject(); result.addProperty("ok",true); result.addProperty("status",status); json(exchange,200,result);
+            queueNotice("طباعة «"+name+"»: "+status);
+        } catch (Exception ex) { Throwable cause=ex instanceof java.util.concurrent.ExecutionException&&ex.getCause()!=null?ex.getCause():ex; json(exchange,422,error(cause.getMessage()==null?"تعذرت طباعة الملف.":cause.getMessage())); }
+        finally { try { if(temp!=null)Files.deleteIfExists(temp); } finally { printSlots.release(); } }
     }
 
     public static Path resolveDataRoot() {
@@ -145,7 +200,7 @@ public final class WaselRuntime implements AutoCloseable {
 
     private JsonObject settingsView() {
         JsonObject out=new JsonObject(); out.add("settings",SettingsStore.toJson(settings)); out.add("adapters",GSON.toJsonTree(SettingsStore.adapters()));
-        out.addProperty("hostname",safeHost()); out.addProperty("appVersion","0.8.1"); out.addProperty("platform",System.getProperty("os.name")); return out;
+        out.addProperty("hostname",safeHost()); out.addProperty("appVersion","0.9.0"); out.addProperty("platform",System.getProperty("os.name")); return out;
     }
 
     private synchronized void handleStartPeer(HttpExchange exchange) throws IOException {
@@ -159,7 +214,7 @@ public final class WaselRuntime implements AutoCloseable {
             if (name.isBlank()) throw new IllegalArgumentException("اكتب الاسم الظاهر في الإعدادات قبل بدء الاتصال المباشر.");
             name = name.substring(0,Math.min(40,name.length()));
             if (peerServer == null) {
-                nextPeer = new LanRoomServer(store,this::queueNotice,LanDiscovery.PEER_PORT);
+                nextPeer = new LanRoomServer(store,this::queueNotice,LanDiscovery.PEER_PORT,this::sharedPrinterServices);
                 if (fileServer == null) { nextFiles = new FileServer(store); nextFiles.start(); createdFiles = true; }
                 nextPeer.start(); peerServer = nextPeer;
                 if (createdFiles) fileServer = nextFiles;
@@ -185,7 +240,7 @@ public final class WaselRuntime implements AutoCloseable {
         if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) { reply(exchange,405,"الطلب غير مدعوم."); return; }
         try {
         if (roomServer == null) {
-                LanRoomServer socket = new LanRoomServer(store,this::queueNotice,LanDiscovery.SOCKET_PORT); FileServer files = fileServer; boolean createdFiles = false;
+                LanRoomServer socket = new LanRoomServer(store,this::queueNotice,LanDiscovery.SOCKET_PORT,this::sharedPrinterServices); FileServer files = fileServer; boolean createdFiles = false;
                 try { socket.start(); if (files == null) { files = new FileServer(store); files.start(); createdFiles = true; } roomServer=socket; if (createdFiles) fileServer=files; discovery.setHosting(true); }
                 catch(Exception ex) { socket.close(); if (createdFiles && files != null) files.close(); throw ex; }
                 JsonObject started=new JsonObject(); started.add("addresses",lanInfoAddresses()); started.addProperty("port",LanDiscovery.SOCKET_PORT); started.addProperty("filePort",LanDiscovery.FILE_PORT); event("room-started",started);
@@ -213,11 +268,12 @@ public final class WaselRuntime implements AutoCloseable {
     }
 
     private JsonArray lanInfoAddresses() { JsonArray out=new JsonArray(); SettingsStore.Adapter selected=SettingsStore.adapters().stream().filter(a->a.id.equals(settings.networkInterface)).findFirst().orElse(null); if(selected!=null)out.add(selected.address);else SettingsStore.adapters().forEach(a->{if(!out.contains(GSON.toJsonTree(a.address)))out.add(a.address);}); return out; }
+    private JsonArray sharedPrinterServices(){JsonArray out=new JsonArray();if(settings==null||!settings.sharePrinters||settings.sharedPrinterIds==null)return out;for(JsonElement item:PrinterService.list())if(settings.sharedPrinterIds.contains(item.getAsJsonObject().get("id").getAsString()))out.add(item);return out;}
     private static String safeHost(){try{return InetAddress.getLocalHost().getHostName();}catch(Exception ex){return "Wasel";}}
     private static String contentType(String path){String lower=path.toLowerCase(Locale.ROOT); if(lower.endsWith(".html"))return"text/html; charset=utf-8";if(lower.endsWith(".js"))return"text/javascript; charset=utf-8";if(lower.endsWith(".css"))return"text/css; charset=utf-8";if(lower.endsWith(".png"))return"image/png";if(lower.endsWith(".svg"))return"image/svg+xml";if(lower.endsWith(".ico"))return"image/x-icon";return"application/octet-stream";}
     private static JsonObject error(String message){JsonObject result=new JsonObject();result.addProperty("ok",false);result.addProperty("error",message);return result;}
     private static void json(HttpExchange exchange,int status,JsonElement data)throws IOException{byte[] body=GSON.toJson(data).getBytes(StandardCharsets.UTF_8);exchange.getResponseHeaders().set("Content-Type","application/json; charset=utf-8");exchange.getResponseHeaders().set("X-Content-Type-Options","nosniff");exchange.getResponseHeaders().set("Cache-Control","no-store");exchange.sendResponseHeaders(status,body.length);try(var output=exchange.getResponseBody()){output.write(body);}}
     private static void reply(HttpExchange exchange,int status,String text)throws IOException{json(exchange,status,error(text));}
 
-    @Override public synchronized void close(){if(!closed.compareAndSet(false,true))return;discovery.setHosting(false);discovery.setPeerProfile("","",false);if(roomServer!=null)roomServer.close();if(peerServer!=null)peerServer.close();if(fileServer!=null)fileServer.close();discovery.close();if(uiServer!=null)uiServer.stop(1);store.close();}
+    @Override public synchronized void close(){if(!closed.compareAndSet(false,true))return;printExecutor.shutdownNow();discovery.setHosting(false);discovery.setPeerProfile("","",false);if(roomServer!=null)roomServer.close();if(peerServer!=null)peerServer.close();if(fileServer!=null)fileServer.close();discovery.close();if(uiServer!=null)uiServer.stop(1);store.close();}
 }
