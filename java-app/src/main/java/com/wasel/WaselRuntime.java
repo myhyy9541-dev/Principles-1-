@@ -19,6 +19,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -27,13 +28,14 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
+import java.util.function.Function;
 
 public final class WaselRuntime implements AutoCloseable {
     private static final Gson GSON = new Gson();
     public static final int UI_PORT = 43819;
     private final Path dataRoot, settingsPath;
     private final PrintPermissionStore printPermissions;
-    private final ConcurrentLinkedQueue<JsonObject> events = new ConcurrentLinkedQueue<>();
+    private final ConcurrentHashMap<String, ConcurrentLinkedQueue<JsonObject>> eventQueues = new ConcurrentHashMap<>();
     private final AtomicBoolean closed = new AtomicBoolean();
     private final ExecutorService printExecutor = Executors.newFixedThreadPool(2, r -> { Thread t=new Thread(r,"wasel-printer-worker");t.setDaemon(true);return t; });
     private final Semaphore printSlots = new Semaphore(2);
@@ -45,6 +47,7 @@ public final class WaselRuntime implements AutoCloseable {
     private LanRoomServer roomServer;
     private LanRoomServer peerServer;
     private volatile Consumer<CompletableFuture<Path>> directoryChooser;
+    private volatile Function<JsonObject, CompletableFuture<String>> windowController;
 
     public WaselRuntime() throws IOException {
         dataRoot = resolveDataRoot(); settingsPath = dataRoot.resolve("settings.json"); Files.createDirectories(dataRoot);
@@ -61,6 +64,7 @@ public final class WaselRuntime implements AutoCloseable {
         uiServer.createContext("/api/printers", this::handlePrinters);
         uiServer.createContext("/api/printer-permissions", this::handlePrinterPermissions);
         uiServer.createContext("/api/print-local", this::handlePrintLocal);
+        uiServer.createContext("/api/window", this::handleWindow);
         uiServer.createContext("/api/start-room", this::handleStartRoom);
         uiServer.createContext("/api/start-peer", this::handleStartPeer);
         uiServer.createContext("/api/stop-peer", this::handleStopPeer);
@@ -77,6 +81,35 @@ public final class WaselRuntime implements AutoCloseable {
         return configured == null || configured.isBlank() ? null : Path.of(configured).toAbsolutePath().normalize();
     }
     public void setDirectoryChooser(Consumer<CompletableFuture<Path>> chooser) { directoryChooser = chooser; }
+    public void setWindowController(Function<JsonObject, CompletableFuture<String>> controller) { windowController = controller; }
+
+    private void handleWindow(HttpExchange exchange) throws IOException {
+        if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) { reply(exchange,405,"الطلب غير مدعوم."); return; }
+        Function<JsonObject, CompletableFuture<String>> controller = windowController;
+        if (controller == null) { reply(exchange,503,"إدارة النوافذ غير متاحة."); return; }
+        try {
+            JsonObject request = JsonParser.parseString(new String(exchange.getRequestBody().readNBytes(8192),StandardCharsets.UTF_8)).getAsJsonObject();
+            String action = request.has("action") ? request.get("action").getAsString() : "";
+            String view = request.has("view") ? request.get("view").getAsString() : "";
+            if (!List.of("open","show","hide","close","unregister").contains(action)) { reply(exchange,400,"إجراء النافذة غير صالح."); return; }
+            if ("unregister".equals(action)) {
+                String windowId = request.has("windowId") ? request.get("windowId").getAsString() : "";
+                eventQueues.remove(windowId);
+                JsonObject response = new JsonObject(); response.addProperty("ok",true); response.addProperty("windowId",windowId); json(exchange,200,response); return;
+            }
+            if ("open".equals(action) && !List.of("workspace","call").contains(view)) { reply(exchange,400,"نوع النافذة غير مدعوم."); return; }
+            if ("open".equals(action) && "workspace".equals(view)) {
+                String target = request.has("targetId") ? request.get("targetId").getAsString() : "";
+                if (!"general".equals(target) && !target.matches("[A-Za-z0-9_-]{16,80}")) { reply(exchange,400,"معرّف المستخدم غير صالح."); return; }
+                String name = request.has("targetName") ? request.get("targetName").getAsString() : "مستخدم";
+                request.addProperty("targetName",name.replaceAll("[\\r\\n\\u0000]"," ").substring(0,Math.min(40,name.replaceAll("[\\r\\n\\u0000]"," ").length())));
+            }
+            CompletableFuture<String> result = controller.apply(request);
+            String windowId = result.get(10,TimeUnit.SECONDS);
+            JsonObject response = new JsonObject(); response.addProperty("ok",true); response.addProperty("windowId",windowId == null ? "" : windowId); json(exchange,200,response);
+        } catch (TimeoutException ex) { reply(exchange,504,"انتهت مهلة فتح النافذة."); }
+        catch (Exception ex) { reply(exchange,400,ex.getCause() == null ? "تعذر تنفيذ إجراء النافذة." : String.valueOf(ex.getCause().getMessage())); }
+    }
 
     private void handleChooseSaveDirectory(HttpExchange exchange) throws IOException {
         if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) { reply(exchange,405,"الطلب غير مدعوم."); return; }
@@ -170,9 +203,13 @@ public final class WaselRuntime implements AutoCloseable {
         }
     }
 
-    private void onRoomFound(JsonObject room) { if (events.size() < 256) event("room-found", room); }
-    private void onPeerFound(JsonObject peer) { if (events.size() < 256) event("peer-found", peer); }
-    private void event(String type, Object data) { JsonObject item = new JsonObject(); item.addProperty("type", type); item.add("data", GSON.toJsonTree(data)); if (events.size() > 256) events.poll(); events.offer(item); }
+    private void onRoomFound(JsonObject room) { event("room-found", room); }
+    private void onPeerFound(JsonObject peer) { event("peer-found", peer); }
+    private void event(String type, Object data) {
+        JsonObject item = new JsonObject(); item.addProperty("type", type); item.add("data", GSON.toJsonTree(data));
+        if (eventQueues.isEmpty()) eventQueues.computeIfAbsent("monitor", ignored -> new ConcurrentLinkedQueue<>());
+        for (ConcurrentLinkedQueue<JsonObject> queue : eventQueues.values()) { while (queue.size() >= 256) queue.poll(); queue.offer(item.deepCopy()); }
+    }
     private void queueNotice(String text) { event("notice", text); }
 
     private void handleLanInfo(HttpExchange exchange) throws IOException {
@@ -200,7 +237,7 @@ public final class WaselRuntime implements AutoCloseable {
 
     private JsonObject settingsView() {
         JsonObject out=new JsonObject(); out.add("settings",SettingsStore.toJson(settings)); out.add("adapters",GSON.toJsonTree(SettingsStore.adapters()));
-        out.addProperty("hostname",safeHost()); out.addProperty("appVersion","0.9.0"); out.addProperty("platform",System.getProperty("os.name")); return out;
+        out.addProperty("hostname",safeHost()); out.addProperty("appVersion","0.9.1"); out.addProperty("platform",System.getProperty("os.name")); return out;
     }
 
     private synchronized void handleStartPeer(HttpExchange exchange) throws IOException {
@@ -251,7 +288,17 @@ public final class WaselRuntime implements AutoCloseable {
 
     private void handleEvents(HttpExchange exchange) throws IOException {
         if (!"GET".equalsIgnoreCase(exchange.getRequestMethod())) { reply(exchange,405,"الطلب غير مدعوم."); return; }
-        JsonArray out=new JsonArray(); JsonObject item; int count=0; while(count++<128 && (item=events.poll())!=null) out.add(item); json(exchange,200,out);
+        String windowId = queryParameter(exchange.getRequestURI().getRawQuery(),"windowId");
+        if (!windowId.matches("[A-Za-z0-9_-]{1,80}")) { reply(exchange,400,"معرّف النافذة غير صالح."); return; }
+        if (!eventQueues.containsKey(windowId) && eventQueues.size() >= 64) { reply(exchange,429,"عدد نوافذ واصل المفتوحة تجاوز الحد الآمن."); return; }
+        ConcurrentLinkedQueue<JsonObject> queue = eventQueues.computeIfAbsent(windowId, ignored -> new ConcurrentLinkedQueue<>());
+        JsonArray out=new JsonArray(); JsonObject item; int count=0; while(count++<128 && (item=queue.poll())!=null) out.add(item); json(exchange,200,out);
+    }
+
+    private static String queryParameter(String query,String key) {
+        if (query == null) return "";
+        for (String item : query.split("&")) { String[] pair=item.split("=",2); if (pair.length==2 && key.equals(pair[0])) try { return java.net.URLDecoder.decode(pair[1],StandardCharsets.UTF_8); } catch (IllegalArgumentException ignored) { return ""; } }
+        return "";
     }
 
     private void handleStatic(HttpExchange exchange) throws IOException {

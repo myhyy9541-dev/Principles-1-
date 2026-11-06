@@ -1,6 +1,17 @@
 <!doctype html>
 <html lang="ar" dir="rtl"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>واصل</title><link rel="stylesheet" href="style.css"></head>
-<body><div class="app-shell">
+<body><section id="monitorView" class="monitor-view hidden" aria-label="لوحة متابعة واصل">
+  <header class="monitor-head"><div class="brand-mark">و</div><div><b>واصل</b><small>متابعة الشبكة المحلية</small></div><button id="monitorSettingsBtn" class="monitor-icon" title="الإعدادات">⚙</button></header>
+  <div id="monitorStatus" class="monitor-status"><span id="monitorStatusDot" class="green-dot"></span><div><b id="monitorStatusTitle">جارٍ الاتصال</b><small id="monitorStatusText">اكتشاف الأجهزة على الشبكة…</small></div></div>
+  <div class="monitor-section-title"><b>الأشخاص المتصلون</b><span id="monitorOnlineCount">0</span></div>
+  <p class="monitor-call-hint">حدّد الأشخاص للمكالمة الجماعية، أو استخدم الأيقونة بجانب كل اسم لمكالمة فردية.</p>
+  <div id="monitorMembers" class="monitor-members"></div>
+  <div class="monitor-call-actions"><button id="monitorAudioCall" type="button" class="call-control">☎ صوت للمحددين</button><button id="monitorVideoCall" type="button" class="icon-btn primary">▣ فيديو للمحددين</button></div>
+  <div class="monitor-section-title printer-heading"><b>الطابعات المشتركة</b><button id="refreshSharedPrinters" type="button" class="monitor-refresh">تحديث</button></div>
+  <div id="monitorPrinters" class="monitor-printers"><span class="monitor-empty">جارٍ الاستعلام من الأجهزة المتصلة…</span></div>
+  <footer class="monitor-footer"><span>متصل بالشبكة حتى عند إخفاء هذه اللوحة</span><button id="monitorOpenMain" type="button" class="monitor-open">فتح المحادثة العامة</button></footer>
+</section>
+<div id="appShell" class="app-shell">
   <aside class="sidebar"><div class="brand"><div class="brand-mark">و</div><div><b>واصل</b><small>تواصل المنشأة</small></div></div>
     <div class="workspace"><span class="green-dot"></span><div><b id="roomTitle">شبكة المنشأة</b><small id="connectionText">جارٍ البحث عن غرفة محلية…</small></div></div>
     <button id="createRoom" class="create-room">＋ إنشاء غرفة جديدة</button>

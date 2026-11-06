@@ -1,13 +1,27 @@
 package com.wasel;
 
 import java.awt.Dimension;
+import java.awt.Frame;
+import java.awt.Graphics2D;
+import java.awt.Image;
+import java.awt.MenuItem;
+import java.awt.PopupMenu;
+import java.awt.SystemTray;
+import java.awt.TrayIcon;
+import java.awt.image.BufferedImage;
 import java.io.IOException;
 import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.UUID;
 import java.util.Vector;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import javax.swing.JFileChooser;
@@ -30,6 +44,7 @@ import org.cef.handler.CefDownloadHandler;
 import org.cef.handler.CefJSDialogHandler;
 import org.cef.handler.CefLifeSpanHandlerAdapter;
 import org.cef.misc.BoolRef;
+import com.google.gson.JsonObject;
 
 public final class WaselApplication {
     private WaselRuntime runtime;
@@ -37,6 +52,10 @@ public final class WaselApplication {
     private CefClient cefClient;
     private CefBrowser browser;
     private JFrame frame;
+    private final Map<String, ManagedWindow> windows = new HashMap<>();
+    private final Map<String, String> keyedWindows = new HashMap<>();
+    private TrayIcon trayIcon;
+    private volatile boolean exiting;
     private FileChannel lockChannel;
     private FileLock processLock;
     private final ExecutorService downloadPreparation = Executors.newSingleThreadExecutor(r -> {
@@ -52,6 +71,7 @@ public final class WaselApplication {
             processLock = lockChannel.tryLock();
             if (processLock == null) { showError("واصل يعمل بالفعل على هذا الجهاز."); lockChannel.close(); lockChannel=null; return; }
             runtime = new WaselRuntime();
+            runtime.setWindowController(this::handleWindowRequest);
             runtime.setDirectoryChooser(result -> SwingUtilities.invokeLater(() -> {
                 try {
                     JFileChooser chooser = new JFileChooser(); chooser.setDialogTitle("اختيار مجلد الحفظ");
@@ -78,8 +98,13 @@ public final class WaselApplication {
             cefClient.addLifeSpanHandler(new CefLifeSpanHandlerAdapter() {
                 @Override public boolean onBeforePopup(CefBrowser current, org.cef.browser.CefFrame frame, String targetUrl, String targetFrameName) { return true; }
             });
-            browser = cefClient.createBrowser(runtime.startUrl(), false, false);
-            SwingUtilities.invokeAndWait(this::createWindow);
+            SwingUtilities.invokeAndWait(() -> {
+                String monitorId = UUID.randomUUID().toString().replace("-", "");
+                ManagedWindow main = createBrowserWindow("monitor", monitorId, "", "", true);
+                browser = main.browser; frame = main.frame;
+                installTrayIcon();
+                createBrowserWindow("call", UUID.randomUUID().toString().replace("-", ""), "", "", false);
+            });
         } catch (Throwable error) {
             error.printStackTrace();
             if (runtime != null) runtime.close();
@@ -88,12 +113,105 @@ public final class WaselApplication {
         }
     }
 
-    private void createWindow() {
-        frame = new JFrame("واصل - تواصل المنشأة"); frame.setDefaultCloseOperation(JFrame.DO_NOTHING_ON_CLOSE);
-        frame.setMinimumSize(new Dimension(1000, 680)); frame.setSize(1280, 820); frame.setLocationRelativeTo(null);
-        frame.add(browser.getUIComponent());
-        frame.addWindowListener(new java.awt.event.WindowAdapter() { @Override public void windowClosing(java.awt.event.WindowEvent event) { shutdown(); } });
-        frame.setVisible(true);
+    private ManagedWindow createBrowserWindow(String role, String id, String targetId, String targetName, boolean visible) {
+        String key = "monitor".equals(role) ? "monitor" : "call".equals(role) ? "call" : "workspace:" + targetId;
+        String url = runtime.startUrl() + "?view=" + encode(role) + "&windowId=" + encode(id);
+        if (!targetId.isBlank()) url += "&targetId=" + encode(targetId) + "&targetName=" + encode(targetName);
+        final String pageUrl = url;
+        CefBrowser nextBrowser = cefClient.createBrowser(pageUrl, false, false);
+        JFrame nextFrame = new JFrame("monitor".equals(role) ? "واصل - المتابعة" : "call".equals(role) ? "واصل - المكالمة" : "واصل - " + targetName);
+        nextFrame.setDefaultCloseOperation(JFrame.DO_NOTHING_ON_CLOSE);
+        nextFrame.add(nextBrowser.getUIComponent());
+        Dimension minimum = "monitor".equals(role) ? new Dimension(300, 500) : new Dimension(760, 560);
+        Dimension size = "monitor".equals(role) ? new Dimension(340, 690) : "call".equals(role) ? new Dimension(1100, 760) : new Dimension(1100, 760);
+        nextFrame.setMinimumSize(minimum); nextFrame.setSize(size); nextFrame.setLocationRelativeTo(null);
+        ManagedWindow managed = new ManagedWindow(id, key, role, nextBrowser, nextFrame);
+        windows.put(id, managed); keyedWindows.put(key, id);
+        if ("monitor".equals(role)) { this.browser = nextBrowser; this.frame = nextFrame; }
+        if ("monitor".equals(role)) nextFrame.addWindowListener(new java.awt.event.WindowAdapter() {
+            @Override public void windowClosing(java.awt.event.WindowEvent event) { hideMainWindow(); }
+        });
+        else if ("call".equals(role)) nextFrame.addWindowListener(new java.awt.event.WindowAdapter() {
+            @Override public void windowClosing(java.awt.event.WindowEvent event) {
+                nextBrowser.executeJavaScript("window.closeCallFromNative && window.closeCallFromNative()", pageUrl, 0);
+                nextFrame.setVisible(false);
+            }
+        });
+        else nextFrame.addWindowListener(new java.awt.event.WindowAdapter() {
+            @Override public void windowClosing(java.awt.event.WindowEvent event) { disposeWindow(id); }
+        });
+        if (visible) { nextFrame.setVisible(true); nextFrame.toFront(); }
+        return managed;
+    }
+
+    private static String encode(String value) { return URLEncoder.encode(value == null ? "" : value, StandardCharsets.UTF_8); }
+
+    private CompletableFuture<String> handleWindowRequest(JsonObject request) {
+        CompletableFuture<String> result = new CompletableFuture<>();
+        SwingUtilities.invokeLater(() -> {
+            try {
+                String action = request.has("action") ? request.get("action").getAsString() : "";
+                if ("open".equals(action)) {
+                    String view = request.has("view") ? request.get("view").getAsString() : "";
+                    if ("call".equals(view)) {
+                        String callId = keyedWindows.get("call"); ManagedWindow callWindow = callId == null ? null : windows.get(callId);
+                        if (callWindow == null) callWindow = createBrowserWindow("call", UUID.randomUUID().toString().replace("-", ""), "", "", false);
+                        callWindow.frame.setVisible(true); callWindow.frame.toFront(); callWindow.frame.requestFocus(); result.complete(callWindow.id); return;
+                    }
+                    String targetId = request.get("targetId").getAsString();
+                    String targetName = request.has("targetName") ? request.get("targetName").getAsString() : "مستخدم";
+                    String key = "workspace:" + targetId;
+                    String existingId = keyedWindows.get(key);
+                    ManagedWindow existing = existingId == null ? null : windows.get(existingId);
+                    if (existing != null) { existing.frame.setVisible(true); existing.frame.toFront(); result.complete(existing.id); return; }
+                    result.complete(createBrowserWindow("workspace", UUID.randomUUID().toString().replace("-", ""), targetId, targetName, true).id);
+                    return;
+                }
+                String id = request.has("windowId") ? request.get("windowId").getAsString() : "";
+                ManagedWindow window = windows.get(id);
+                if (window == null) { result.completeExceptionally(new IllegalArgumentException("النافذة لم تعد متاحة.")); return; }
+                switch (action) {
+                    case "show" -> { window.frame.setVisible(true); window.frame.toFront(); window.frame.requestFocus(); }
+                    case "hide" -> window.frame.setVisible(false);
+                    case "close" -> { if ("call".equals(window.role)) window.frame.setVisible(false); else if ("monitor".equals(window.role)) hideMainWindow(); else disposeWindow(id); }
+                    default -> throw new IllegalArgumentException("إجراء النافذة غير صالح.");
+                }
+                result.complete(window.id);
+            } catch (Exception error) { result.completeExceptionally(error); }
+        });
+        return result;
+    }
+
+    private void disposeWindow(String id) {
+        ManagedWindow window = windows.remove(id); if (window == null) return;
+        keyedWindows.remove(window.key, id);
+        try { window.browser.close(true); } catch (Exception ignored) { }
+        window.frame.dispose();
+    }
+
+    private void hideMainWindow() {
+        if (frame == null) return;
+        if (trayIcon != null) frame.setVisible(false);
+        else frame.setState(Frame.ICONIFIED);
+    }
+
+    private void installTrayIcon() {
+        if (!SystemTray.isSupported()) return;
+        try {
+            PopupMenu menu = new PopupMenu(); MenuItem restore = new MenuItem("إظهار واصل"); MenuItem exit = new MenuItem("إنهاء واصل");
+            restore.addActionListener(event -> SwingUtilities.invokeLater(() -> { frame.setVisible(true); frame.setState(Frame.NORMAL); frame.toFront(); }));
+            exit.addActionListener(event -> shutdown()); menu.add(restore); menu.addSeparator(); menu.add(exit);
+            Image icon = new BufferedImage(32,32,BufferedImage.TYPE_INT_ARGB); Graphics2D graphics = ((BufferedImage)icon).createGraphics();
+            graphics.setColor(new java.awt.Color(32,173,132)); graphics.fillRoundRect(1,1,30,30,9,9); graphics.setColor(java.awt.Color.WHITE); graphics.setFont(new java.awt.Font("Dialog",java.awt.Font.BOLD,21)); graphics.drawString("و",7,24); graphics.dispose();
+            trayIcon = new TrayIcon(icon,"واصل — تواصل المنشأة",menu); trayIcon.setImageAutoSize(true);
+            trayIcon.addActionListener(event -> SwingUtilities.invokeLater(() -> { frame.setVisible(true); frame.setState(Frame.NORMAL); frame.toFront(); }));
+            SystemTray.getSystemTray().add(trayIcon);
+        } catch (Exception ex) { trayIcon = null; System.err.println("Wasel tray icon: " + ex.getMessage()); }
+    }
+
+    private static final class ManagedWindow {
+        final String id, key, role; final CefBrowser browser; final JFrame frame;
+        ManagedWindow(String id,String key,String role,CefBrowser browser,JFrame frame) { this.id=id; this.key=key; this.role=role; this.browser=browser; this.frame=frame; }
     }
 
     private void installFileDialog() {
@@ -205,14 +323,21 @@ public final class WaselApplication {
     }
 
     private synchronized void shutdown() {
+        if (exiting) return;
+        exiting = true;
         downloadPreparation.shutdownNow();
         if (runtime != null) runtime.close();
-        if (browser != null) try { browser.close(true); } catch (Exception ignored) { }
+        for (ManagedWindow window : windows.values()) {
+            try { window.browser.close(true); } catch (Exception ignored) { }
+            try { window.frame.dispose(); } catch (Exception ignored) { }
+        }
+        windows.clear(); keyedWindows.clear();
         if (cefClient != null) try { cefClient.dispose(); } catch (Exception ignored) { }
         if (cefApp != null) try { cefApp.dispose(); } catch (Exception ignored) { }
+        if (trayIcon != null) try { SystemTray.getSystemTray().remove(trayIcon); } catch (Exception ignored) { }
         try { if (processLock != null && processLock.isValid()) processLock.release(); } catch (IOException ignored) { }
         try { if (lockChannel != null) lockChannel.close(); } catch (IOException ignored) { }
-        if (frame != null) { frame.dispose(); frame = null; }
+        browser = null; frame = null;
         System.exit(0);
     }
 }
