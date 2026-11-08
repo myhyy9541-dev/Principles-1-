@@ -32,13 +32,14 @@ public final class LanRoomServer implements AutoCloseable {
     private final Map<String, Deque<Long>> rates = new ConcurrentHashMap<>();
     private volatile SocketIOServer server;
     private final Map<String, JsonObject> activeCalls = new ConcurrentHashMap<>();
+    private boolean closing;
 
     public LanRoomServer(RoomStore store, Consumer<String> notice) { this(store, notice, LanDiscovery.SOCKET_PORT, JsonArray::new); }
     public LanRoomServer(RoomStore store, Consumer<String> notice, int port) { this(store, notice, port, JsonArray::new); }
     public LanRoomServer(RoomStore store, Consumer<String> notice, int port, Supplier<JsonArray> sharedPrinters) { this.store = store; this.notice = notice; this.port = port; this.sharedPrinters = sharedPrinters; }
 
     public synchronized void start() {
-        if (server != null) return;
+        if (server != null || closing) return;
         Configuration config = new Configuration(); config.setHostname("0.0.0.0"); config.setPort(port);
         config.setMaxHttpContentLength(2 * 1024 * 1024); config.setMaxFramePayloadLength(2 * 1024 * 1024);
         config.setEnableCors(true); config.setOrigin("*"); config.setPingInterval(25000); config.setPingTimeout(60000);
@@ -364,7 +365,7 @@ public final class LanRoomServer implements AutoCloseable {
 
     private void forwardSignal(SocketIOClient client, JsonObject packet, JsonObject description) {
         String to = text(packet, "to", "");
-        try { SocketIOClient target = server.getClient(UUID.fromString(to)); if (target != null) { JsonObject forwarded = new JsonObject(); forwarded.addProperty("from", client.getSessionId().toString()); if (description != null) forwarded.add("description", description); if (packet.has("candidate")) forwarded.add("candidate", packet.get("candidate")); send(target, "signal", forwarded); } } catch (IllegalArgumentException ignored) { }
+        try { SocketIOClient target = server.getClient(UUID.fromString(to)); if (target != null) { JsonObject forwarded = new JsonObject(); forwarded.addProperty("from", client.getSessionId().toString()); if (description != null) forwarded.add("description", description); if (packet.has("callId")) forwarded.add("callId", packet.get("callId")); if (packet.has("candidate")) forwarded.add("candidate", packet.get("candidate")); send(target, "signal", forwarded); } } catch (IllegalArgumentException ignored) { }
     }
 
     private void broadcastCallRoster(JsonObject call) {
@@ -425,13 +426,15 @@ public final class LanRoomServer implements AutoCloseable {
         if(port==LanDiscovery.PEER_PORT && sharedPrinters.get().isEmpty()){send(client,"print-printers",emptyPrintList(text(raw,"requestId","")));return;}
         SocketIOClient target=socketForClient(text(raw,"targetClientId",""));
         if(target==null){send(client,"print-printers",emptyPrintList(text(raw,"requestId","")));return;}
-        JsonObject query=new JsonObject(); query.addProperty("requesterClientId",text(requester,"clientId","")); query.addProperty("requesterName",text(requester,"name","مستخدم")); query.addProperty("requestId",text(raw,"requestId",""));
+        JsonObject query=new JsonObject(); query.addProperty("requesterClientId",text(requester,"clientId","")); query.addProperty("requesterSessionId",client.getSessionId().toString()); query.addProperty("requesterName",text(requester,"name","مستخدم")); query.addProperty("requestId",text(raw,"requestId",""));
         send(target,"print-list-request",query);
     }
 
     private void printListResponse(SocketIOClient client,JsonObject raw){
         JsonObject owner=peers.get(client.getSessionId()); if(owner==null || !withinRate(client,"print-list-response",10))return;
-        String requesterId=text(raw,"requesterClientId",""); SocketIOClient requester=socketForClient(requesterId); if(requester==null)return;
+        String requesterId=text(raw,"requesterClientId",""); SocketIOClient requester=socketForSession(text(raw,"requesterSessionId",""));
+        JsonObject requesterUser=requester==null?null:peers.get(requester.getSessionId());
+        if(requesterUser==null || !requesterId.equals(text(requesterUser,"clientId","")))return;
         JsonObject response=new JsonObject(); response.addProperty("ownerClientId",text(owner,"clientId","")); response.addProperty("ownerName",text(owner,"name","مستخدم"));
         Set<String> installed=new HashSet<>(); if(port==LanDiscovery.PEER_PORT) for(JsonElement printer:sharedPrinters.get()) installed.add(text(printer.getAsJsonObject(),"id",""));
         JsonArray shared=new JsonArray(); JsonElement requested=raw.get("printers");
@@ -544,6 +547,7 @@ public final class LanRoomServer implements AutoCloseable {
     private List<SocketIOClient> socketsForClient(String clientId) { List<SocketIOClient> out = new ArrayList<>(); SocketIOServer current = server; if (current == null) return out; for (Map.Entry<UUID,JsonObject> item : peers.entrySet()) if (clientId.equals(text(item.getValue(), "clientId", ""))) { SocketIOClient socket = current.getClient(item.getKey()); if (socket != null && socket.isChannelOpen()) out.add(socket); } return out; }
     private List<SocketIOClient> clientsForClient(String clientId) { return socketsForClient(clientId); }
     private SocketIOClient socketForClient(String clientId) { List<SocketIOClient> sockets = socketsForClient(clientId); return sockets.isEmpty() ? null : sockets.get(0); }
+    private SocketIOClient socketForSession(String sessionId) { try { SocketIOServer current=server; SocketIOClient client=current==null?null:current.getClient(UUID.fromString(sessionId)); return client!=null && client.isChannelOpen()?client:null; } catch(IllegalArgumentException ignored) { return null; } }
     private SocketIOClient callSocketForClient(String clientId) { for (SocketIOClient socket : socketsForClient(clientId)) { JsonObject peer = peers.get(socket.getSessionId()); if (peer != null && "call".equals(text(peer, "windowRole", ""))) return socket; } return socketForClient(clientId); }
     private void send(SocketIOClient client, String event, Object value) { if (client != null && client.isChannelOpen()) try { client.sendEvent(event, plain(value)); } catch (Exception ex) { System.err.println("Wasel event " + event + ": " + ex.getMessage()); } }
     private void broadcast(String event, Object value) { for (SocketIOClient client : onlineClients()) send(client,event,value); }
@@ -570,5 +574,9 @@ public final class LanRoomServer implements AutoCloseable {
     private static String text(JsonObject object,String key,String fallback) { return LanDiscovery.text(object,key,fallback); }
     private static String cleanName(String value) { String name=value==null?"":value.replaceAll("[\\r\\n\\u0000]"," ").strip(); return name.isEmpty()?"مستخدم":name.substring(0,Math.min(40,name.length())); }
 
-    @Override public synchronized void close() { SocketIOServer current=server; server=null; activeCalls.clear(); peers.clear(); if(current!=null) try { current.stop(); } catch(Exception ex) { notice.accept("تعذر إيقاف الغرفة بشكل نظيف."); } }
+    @Override public void close() {
+        SocketIOServer current;
+        synchronized(this) { if(closing)return; closing=true; current=server; server=null; activeCalls.clear(); peers.clear(); rates.clear(); }
+        if(current!=null) try { current.stop(); } catch(Exception ex) { notice.accept("تعذر إيقاف الغرفة بشكل نظيف."); }
+    }
 }

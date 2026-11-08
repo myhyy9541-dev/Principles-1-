@@ -74,8 +74,8 @@ async function publishPrinterList(data, source) {
     const view=await window.wasel.getPrinters();
     const ids=new Set(view.shareEnabled ? (view.sharedPrinterIds||[]) : []);
     const printers=(view.printers||[]).filter(printer=>ids.has(printer.id));
-    source.emit('print-list',{requesterClientId:data.requesterClientId,requestId:data.requestId,printers});
-  } catch (_) { source.emit('print-list',{requesterClientId:data.requesterClientId,requestId:data.requestId,printers:[]}); }
+    source.emit('print-list',{requesterClientId:data.requesterClientId,requesterSessionId:data.requesterSessionId,requestId:data.requestId,printers});
+  } catch (_) { source.emit('print-list',{requesterClientId:data.requesterClientId,requesterSessionId:data.requesterSessionId,requestId:data.requestId,printers:[]}); }
 }
 async function requestRemotePrint(message) {
   if (!connected && connectionMode==='host') throw new Error('اتصل بغرفة المضيف أولاً.');
